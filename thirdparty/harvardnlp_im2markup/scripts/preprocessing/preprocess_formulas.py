@@ -2,12 +2,8 @@
 # tokenize latex formulas
 import sys, os, argparse, logging, subprocess, shutil
 
-def is_ascii(str):
-    try:
-        str.decode('ascii')
-        return True
-    except UnicodeError:
-        return False
+def is_ascii(s):
+    return len(s) == len(s.encode())
 
 def process_args(args):
     parser = argparse.ArgumentParser(description='Preprocess (tokenize or normalize) latex formulas')
