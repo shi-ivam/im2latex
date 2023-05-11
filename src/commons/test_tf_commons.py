@@ -40,18 +40,18 @@ with tf.device('/cpu:*'):
     l1 = tf.constant([[3, 3],
                     [3, 3],
                     [3, 3]])
-    print 'Shapes: h1:%s, l1:%s'%(K.int_shape(h1), K.int_shape(l1))
+    print ('Shapes: h1:%s, l1:%s'%(K.int_shape(h1), K.int_shape(l1)))
     h2 = tf.constant([[[1,2,3,0,0,0,0],[4,5,6,0,0,0,0]],
                     [[7,8,100,9,101,0,0],[100,10,100,11,12,0,0]],
                     [[13,14,15,100,100,100,0],[101,16,17,18,0,0,0]]  ])
     l2 = tf.constant([[3, 3],
                     [5, 5],
                     [6, 4]])
-    print 'Shapes: h2:%s, l2:%s'%(K.int_shape(h2), K.int_shape(l2))
+    print ('Shapes: h2:%s, l2:%s'%(K.int_shape(h2), K.int_shape(l2)))
     h1_s, l1_s = tfc.squash_3d(3, 2, h1, l1, 100)
-    print 'Shapes: h1_s:%s, l1_s:%s'%(K.int_shape(h1_s), K.int_shape(l1_s))
+    print ('Shapes: h1_s:%s, l1_s:%s'%(K.int_shape(h1_s), K.int_shape(l1_s)))
     h2_s, l2_s = tfc.squash_3d(3, 2, h2, l2, 100)
-    print 'Shapes: h2_s:%s, l2_s:%s'%(K.int_shape(h2_s), K.int_shape(l2_s))
+    print ('Shapes: h2_s:%s, l2_s:%s'%(K.int_shape(h2_s), K.int_shape(l2_s)))
     ed1 = tfc.edit_distance3D(3, 2, h2, l2, h1, l1, 100, 101)
     mean1 = tf.reduce_mean(ed1)
     acc1 = tf.reduce_mean(tf.to_float(tf.equal(ed1, 0)))
@@ -88,8 +88,8 @@ with tf.device('/cpu:*'):
     ed2_s = tfc.edit_distance3D(3, 2, h2_2_s, l2_2_s, h1_s, l1_s, 100, 101)
     acc2_s = tf.reduce_mean(tf.to_float(tf.equal(ed2_s, 0)))
     sum2_s = tf.reduce_sum(ed2_s)
-    print 'Shape of ed1=%s'%(K.int_shape(ed1),)
-    print 'Shape of ed2_s=%s'%(K.int_shape(ed2_s),)
+    print ('Shape of ed1=%s'%(K.int_shape(ed1),))
+    print ('Shape of ed2_s=%s'%(K.int_shape(ed2_s),))
     _ed2 = tfc.edit_distance2D(6, _h2_2, _l2_2, _h1, _l1, 100, 101)
     _ed2_s = tfc.edit_distance2D(6, _h2_2_s, _l2_2_s, _h1_s, _l1_s, 100, 101)
     _sum2 = tf.reduce_sum(_ed2)
@@ -116,39 +116,39 @@ with tf.device('/cpu:*'):
     len_2 = np.arange(12)
 
 with tf.Session():
-    print 'ed1 = \n%s'%ed1.eval()
+    print ('ed1 = \n%s'%ed1.eval())
     assert mean1.eval() == 0.
     assert acc1.eval() == 1
-    print '_ed1 = \n%s'%_ed1.eval()
+    print ('_ed1 = \n%s'%_ed1.eval())
     assert _mean1.eval() == 0.
     assert _acc1.eval() == 1
-    print 'ed1_s = \n%s'%ed1_s.eval()
+    print ('ed1_s = \n%s'%ed1_s.eval())
     assert mean1_s.eval() == 0.
     assert acc1_s.eval() == 1
-    print '_ed1_s = \n%s'%_ed1_s.eval()
+    print ('_ed1_s = \n%s'%_ed1_s.eval())
     assert _mean1_s.eval() == 0.
     assert _acc1_s.eval() == 1
 
 
-    print 'ed2 = \n%s'%ed2.eval()
+    print ('ed2 = \n%s'%ed2.eval())
     assert sum2.eval() == 1.
     assert acc2.eval() == 1./2.
-    print '_ed2 = \n%s'%_ed2.eval()
+    print ('_ed2 = \n%s'%_ed2.eval())
     assert _sum2.eval() == 1.
     assert _acc2.eval() == 1./2.
-    print 'ed2_s = \n%s'%ed2_s.eval()
+    print ('ed2_s = \n%s'%ed2_s.eval())
     assert sum2_s.eval() == 1.
     assert acc2_s.eval() == 1./2.
-    print '_ed2_s = \n%s'%_ed2_s.eval()
+    print ('_ed2_s = \n%s'%_ed2_s.eval())
     assert _sum2_s.eval() == 1.
     assert _acc2_s.eval() == 1./2.
 
-    print tf_lens1.eval()
-    print tf_lens1_2.eval()
+    print (tf_lens1.eval())
+    print (tf_lens1_2.eval())
     assert np.all(tf_lens1.eval() == len_1 )
     assert np.all(tf_lens1_2.eval() == len_2)
-    print tf_lens2.eval()
-    print tf_lens2_2.eval()
+    print (tf_lens2.eval())
+    print (tf_lens2_2.eval())
     assert np.all(tf_lens2.eval() == len_1.reshape(3,4))
     assert np.all(tf_lens2_2.eval() == len_2.reshape(3,4))
-print "Success !"
+print ("Success !")
