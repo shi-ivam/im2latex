@@ -27,7 +27,7 @@ import numpy as np
 from data_commons import logger
 import dl_commons as dlc
 import tensorflow as tf
-from tensorflow.contrib.keras import backend as K
+from tensorflow.keras import backend as K
 from dl_commons import (mandatory, equalto, boolean, HyperParams, PD, PDL, iscallable, iscallableOrNone,
                         issequenceof, issequenceofOrNone, integer, integerOrNone, decimal, decimalOrNone,
                         instanceofOrNone, instanceof)
