@@ -217,13 +217,13 @@ def readlines_to_df(path, colname):
     rows = []
     n = 0
     with open(path, 'r') as f:
-        print 'opened file %s'%path
+        print ('opened file %s'%path)
         for line in f:
             n += 1
             line = line.strip()  # remove \n
             if len(line) > 0:
                 rows.append(line.encode('utf-8'))
-    print 'processed %d lines resulting in %d rows'%(n, len(rows))
+    print ('processed %d lines resulting in %d rows'%(n, len(rows)))
     return pd.DataFrame({colname:rows}, dtype=np.str_)
 
 
@@ -231,13 +231,13 @@ def readlines_to_sr(path):
     rows = []
     n = 0
     with open(path, 'r') as f:
-        print 'opened file %s'%path
+        print ('opened file %s'%path)
         for line in f:
             n += 1
             line = line.strip()  # remove \n
             if len(line) > 0:
                 rows.append(line.encode('utf-8'))
-    print 'processed %d lines resulting in %d rows'%(n, len(rows))
+    print ('processed %d lines resulting in %d rows'%(n, len(rows)))
     return pd.Series(rows, dtype=np.str_)
 
 
