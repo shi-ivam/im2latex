@@ -799,7 +799,7 @@ class decimalOrNone(decimal):
         decimal.__init__(self, begin, end, noneokay=True)
 
 def issequence(v):
-    if isinstance(v, basestring):
+    if isinstance(v, str):
         return False
     return isinstance(v, collections.Sequence)
 
