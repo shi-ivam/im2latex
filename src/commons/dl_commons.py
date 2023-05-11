@@ -21,7 +21,7 @@ Tested on python 2.7
 
 @author: Sumeet S Singh
 """
-import collections
+import collections.abc as collections
 import pprint
 import numpy as np
 import nltk
