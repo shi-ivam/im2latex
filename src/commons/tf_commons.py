@@ -768,7 +768,7 @@ def nested_tf_shape(s):
         return s.shape.as_list()
 
 
-class RNNWrapper(tf.nn.rnn_cell.RNNCell):
+class RNNWrapper(tf.keras.layers.Layer):
     def __init__(self, params, reuse=None, _scope=None, beamsearch_width=1):
         self._params = params = RNNParams(params)
         with tf.variable_scope(_scope or self._params.op_name,
@@ -783,9 +783,14 @@ class RNNWrapper(tf.nn.rnn_cell.RNNCell):
                 ## Note: though we're creating multiple LSTM cells in the same scope, no variables
                 ## are being created here. They will be created when the individual cells are called
                 ## as part of MultiRNNCell.call(), wherein each is given a unique scope.
-                self._cell = tf.nn.rnn_cell.MultiRNNCell(
-                        [self._make_one_cell(n) for n in self._params.layers_units])
+                # self._cell = tf.nn.rnn_cell.MultiRNNCell(
+                #         [self._make_one_cell(n) for n in self._params.layers_units])
+                    
+                # self._num_layers = len(self._params.layers_units)
+                self._cell = tf.keras.layers.StackedRNNCells(
+                    [self._make_one_cell(n) for n in self._params.layers_units])
                 self._num_layers = len(self._params.layers_units)
+
 
             self._batch_state_shape = expand_nested_shape(self._cell.state_size,
                                                           self._params.B*beamsearch_width)
@@ -795,7 +800,7 @@ class RNNWrapper(tf.nn.rnn_cell.RNNCell):
     @property
     def state_size(self):
         return self._cell.state_size
-
+        
     @property
     def output_size(self):
         return self._cell.output_size
