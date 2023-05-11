@@ -1,8 +1,6 @@
- #!/usr/bin/env python2
+#!/usr/bin/env python2
 # -*- coding: utf-8 -*-
 """
-    Hyper-parameters for the model.
-
     Copyright 2017 Sumeet S Singh
 
     This file is part of im2latex solution by Sumeet S Singh.
@@ -20,935 +18,1250 @@
     You should have received a copy of the Affero GNU General Public License
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-Created on Fri Jul 21 11:05:51 2017
+Created on Sun Jul  9 11:44:46 2017
 Tested on python 2.7
 
 @author: Sumeet S Singh
 """
-
-import logging
 import numpy as np
-import os
-import tensorflow as tf
-import data_commons as dtc
+from data_commons import logger
 import dl_commons as dlc
-from dl_commons import (instanceof, integer, integerOrNone, decimal, boolean, equalto, issequenceof, issequenceofOrNone,
-                        PD, iscallable, iscallableOrNone, LambdaVal, instanceofOrNone, Properties)
-from tf_commons import (ConvStackParams, ConvLayerParams, MaxpoolParams, FCLayerParams, MLPParams,
-                        DropoutParams, TensorboardParams, RNNParams)
+import tensorflow as tf
+from tensorflow.keras import backend as K
+from dl_commons import (mandatory, equalto, boolean, HyperParams, PD, PDL, iscallable, iscallableOrNone,
+                        issequenceof, issequenceofOrNone, integer, integerOrNone, decimal, decimalOrNone,
+                        instanceofOrNone, instanceof)
 
-def pad_image_shape(shape, padding):
-    return (shape[0] + 2*padding, shape[1] + 2*padding) + shape[2:]
+class tensor(instanceof):
+    """Tensor shape validator to go with ParamDesc"""
+    def __init__(self, shape):
+        self._shape = shape
+        dlc._ParamValidator.__init__(self, tf.Tensor)
+    def __contains__(self, obj):
+        return instanceof.__contains__(self, obj) and  keras.backend.int_shape(obj) == self._shape
 
-# def get_image_shape(raw_data_dir_, num_channels):
-#     standardized_size = np.load(os.path.join(raw_data_dir_, 'padded_image_dim.pkl'))
-#     return (standardized_size['height'], standardized_size['width'], num_channels)
-#
-# def get_vocab_size(raw_data_dir):
-#     id2word = np.load(os.path.join(raw_data_dir, 'dict_id2word.pkl'))
-#     return max(id2word.keys()) + 1
-#
 
-class GlobalParams(dlc.HyperParams):
-    """ Common Properties to trickle down. """
+def summarize_layer(weights, biases, activations, coll_name):
+    def summarize_vars(var, section_name):
+        """Attach a lot of summaries to a Tensor (for TensorBoard visualization)."""
+        # mean = tf.reduce_mean(var)
+        # tf.summary.scalar(section_name+'/mean', mean)
+        # stddev = tf.sqrt(tf.reduce_mean(tf.square(var - mean)))
+        # tf.summary.scalar(section_name+'/stddev', stddev)
+        # tf.summary.scalar(section_name+'/max', tf.reduce_max(var))
+        # tf.summary.scalar(section_name+'/min', tf.reduce_min(var))
+        tf.summary.histogram(section_name+'/histogram', var, collections=[coll_name] if (coll_name is not None) else None)
+
+    with tf.variable_scope('Summaries'):
+        if weights is not None:
+            summarize_vars(weights, 'Weights')
+        if biases is not None:
+            summarize_vars(biases, 'Biases')
+        if activations is not None:
+            summarize_vars(activations, 'Activations')
+        if state is not None:
+            summarize_vars(state, 'State')
+
+class TensorboardParams(HyperParams):
     proto = (
-        ## Data-set Properties ##
-        PD(
-            'raw_data_dir',
-            'Filesystem path of raw_data_folder from where the pre-processed data is stored.',
-            dlc.instanceof(str)
+        PD('tb_logdir',
+            'Top-level/Root logdir under which run-specific dirs are created. e.g. ./tb_metrics',
+            instanceof(str),
+            ),
+        PD('logdir_tag',
+            'Extra tag-name to attach to the run-specific  logdir name (after the date portion).',
+            instanceofOrNone(str),
+            ),
+        PD('tb_weights',
+            'Section name under which weight summaries show up on tensorboard',
+            None,
+            default='Weights'
+            ),
+        PD('tb_biases',
+            'Section name under which bias summaries show up on tensorboard',
+            None,
+            default='Biases'
+            ),
+        PD('tb_activations',
+            'Section name under which activation summaries show up on tensorboard',
+            None,
+            default='Activations'
+            )
+        )
+    def __init__(self, initVals=None):
+        HyperParams.__init__(self, self.proto, initVals)
+    def __copy__(self):
+        ## Shallow copy
+        return self.__class__(self)
+
+    def copy(self, override_vals={}):
+        ## Shallow copy
+        return self.__class__(self).updated(override_vals)
+
+class DropoutParams(HyperParams):
+    """ Dropout Layer descriptor """
+    proto = (
+        PD('keep_prob',
+              'Probability of keeping an output (i.e. not dropping it).',
+              decimal(),
+              0.5),
+        PD('seed',
+              'Integer seed for the random number generator',
+              integerOrNone(),
+              None
+              )
+        )
+    def __init__(self, initVals=None):
+        HyperParams.__init__(self, self.proto, initVals)
+    def __copy__(self):
+        ## Shallow copy
+        return self.__class__(self)
+
+    def copy(self, override_vals={}):
+        ## Shallow copy
+        return self.__class__(self).updated(override_vals)
+
+class CommonParams(HyperParams):
+    proto = (
+        PD('activation_fn',
+              'The activation function to use. None signifies no activation function.',
+              ## iscallable((tf.nn.relu, tf.nn.tanh, tf.nn.sigmoid, None)),
+              iscallableOrNone(),
+              ),
+        PD('normalizer_fn',
+              'Normalizer function to use instead of biases. If set, biases are not used.',
+              iscallableOrNone(),
+              ),
+        PD('weights_initializer',
+              'Tensorflow weights initializer function',
+              iscallable(),
+              # tf.contrib.layers.xavier_initializer()
+              # tf.contrib.layers.variance_scaling_initializer()
+              ),
+        PD('biases_initializer',
+              'Tensorflow biases initializer function, e.g. tf.zeros_initializer(). ',
+              iscallable(),
+              ## tf.zeros_initializer()
+              ),
+        PD('weights_regularizer',
+              'L1 / L2 norm regularization',
+              iscallableOrNone(),
+              # tf.contrib.layers.l2_regularizer(scale, scope=None)
+              # tf.contrib.layers.l1_regularizer(scale, scope=None)
+              ),
+        PD('biases_regularizer',
+              'L1 / L2 norm regularization',
+              iscallableOrNone()
+              ),
+#        PD('make_tb_metric',"(boolean): Create tensorboard metrics.",
+#              boolean,
+#              True),
+        PD('dropout', 'Dropout parameters if any.',
+              instanceofOrNone(DropoutParams)),
+        # PD('weights_coll_name',
+        #       'Name of trainable weights collection. There is no need to change the default = WEIGHTS',
+        #       ('WEIGHTS',),
+        #       'WEIGHTS'
+        #       ),
+        PD('tb', "Tensorboard Params.",
+           instanceofOrNone(TensorboardParams))
+        )
+
+    def __init__(self, initVals=None):
+        HyperParams.__init__(self, self.proto, initVals)
+    def __copy__(self):
+        ## Shallow copy
+        return self.__class__(self)
+
+    def copy(self, override_vals={}):
+        ## Shallow copy
+        return self.__class__(self).updated(override_vals)
+
+CommonParamsProto = CommonParams().protoD
+
+class FCLayerParams(HyperParams):
+    proto = (
+        PD('activation_fn',
+              'The activation function to use. None signifies no activation function.',
+              ## iscallable((tf.nn.relu, tf.nn.tanh, tf.nn.sigmoid, None)),
+              iscallableOrNone(),
+              ),
+        PD('normalizer_fn',
+              'Normalizer function to use instead of biases. If set, biases are not used.',
+              iscallableOrNone(),
+              ),
+        PD('weights_initializer',
+              'Tensorflow weights initializer function',
+              iscallable(),
+              # tf.contrib.layers.xavier_initializer()
+              # tf.contrib.layers.variance_scaling_initializer()
+              ),
+        PD('biases_initializer',
+              'Tensorflow biases initializer function, e.g. tf.zeros_initializer(). ',
+              iscallable(),
+              ## tf.zeros_initializer()
+              ),
+        PD('weights_regularizer',
+              'L1 / L2 norm regularization',
+              iscallable(),
+              # tf.contrib.layers.l2_regularizer(scale, scope=None)
+              # tf.contrib.layers.l1_regularizer(scale, scope=None)
+              ),
+        PD('biases_regularizer',
+              'L1 / L2 norm regularization',
+              iscallableOrNone()
+              ),
+        PD('dropout', 'Dropout parameters if any.',
+              instanceofOrNone(DropoutParams)),
+        PD('tb', "Tensorboard Params.",
+           instanceofOrNone(TensorboardParams)),
+        PD('num_units',
+          "(integer): number of output units in the layer." ,
+          integer(1),
+          ),
+        )
+
+    def __init__(self, initVals=None):
+        HyperParams.__init__(self, self.proto, initVals)
+
+    def __copy__(self):
+        ## Shallow copy
+        return self.__class__(self)
+
+    def copy(self, override_vals={}):
+        ## Shallow copy
+        return self.__class__(self).updated(override_vals)
+
+class FCLayer(object):
+    def __init__(self, params, batch_input_shape=None):
+        self.my_scope = tf.get_variable_scope()
+        self._params = FCLayerParams(params)
+        self._batch_input_shape = batch_input_shape
+
+    def __call__(self, inp, layer_idx=None):
+        with tf.variable_scope(self.my_scope) as var_scope:
+            with tf.name_scope(var_scope.original_name_scope) as name_scope:
+                ## Parameter Validation
+                assert isinstance(inp, tf.Tensor)
+                if self._batch_input_shape is not None:
+                    assert K.int_shape(inp) == self._batch_input_shape
+
+                params = self._params
+                prefix = 'FC' if params.activation_fn is not None else 'Affine'
+                scope_name = prefix + '_%d'%(layer_idx+1) if layer_idx is not None else prefix
+                with tf.variable_scope(scope_name) as var_scope:
+                    if len(K.int_shape(inp)) != 2:
+                        logger.warn('Input to operation %s/%s has rank !=2 (%d)', name_scope, scope_name, len(K.int_shape(inp)))
+
+                    coll_w = scope_name + '/_weights_'
+                    coll_b = scope_name + '/_biases_'
+                    var_colls = {'biases':[coll_b], 'weights':[coll_w, "REGULARIZED_WEIGHTS"]}
+                    # var_colls['weights'] = [coll_w, "REGULARIZED_WEIGHTS"] if (params.weights_regularizer is not None) else [coll_w]
+                    assert params.weights_regularizer is not None
+
+                    a = tf.keras.layers.Dense(
+                            inputs=inp,
+                            num_outputs = params.num_units,
+                            activation_fn = params.activation_fn,
+                            normalizer_fn = params.normalizer_fn if 'normalizer_fn' in params else None,
+                            weights_initializer = params.weights_initializer,
+                            # weights_regularizer = params.weights_regularizer,
+                            biases_initializer = params.biases_initializer,
+                            # biases_regularizer = params.biases_regularizer,
+                            variables_collections=var_colls,
+                            trainable = True
+                            )
+
+                    if self._params.dropout is not None:
+                        a = DropoutLayer(self._params.dropout, self._batch_input_shape)(a)
+
+                    # For Tensorboard Summaries
+                    self._weights = tf.get_collection(coll_w)
+                    self._biases = tf.get_collection(coll_b)
+                    self._a = a
+
+                if (self._batch_input_shape):
+                    a.set_shape(self._batch_input_shape[:-1] + (params.num_units,))
+
+                return a
+
+    def create_summary_ops(self, coll_name):
+        with tf.variable_scope(self.my_scope) as var_scope:
+            with tf.name_scope(var_scope.original_name_scope):
+                params = self._params
+                if params.tb is not None:
+                    summarize_layer(self._weights, self._biases, self._a, coll_name)
+
+class MLPParams(HyperParams):
+    proto = (
+            PD('tb', "Tensorboard Params.",
+                instanceofOrNone(TensorboardParams)),
+            PD('op_name',
+               'Name of the layer; will show up in tensorboard visualization',
+               None,
+               # 'MLPStack'
+              ),
+            PD('layers',
+               "Sequence of FCLayerParams.",
+               issequenceof(FCLayerParams),
+               ),
+        )
+
+    def __init__(self, initVals=None):
+        HyperParams.__init__(self, self.proto, initVals)
+
+    def __copy__(self):
+        ## Shallow copy
+        return self.__class__(self)
+
+    def copy(self, override_vals={}):
+        ## Shallow copy
+        return self.__class__(self).updated(override_vals)
+
+class MLPStack(object):
+    def __init__(self, params, batch_input_shape=None):
+        self.my_scope = tf.get_variable_scope()
+        self._params = MLPParams(params)
+        self._batch_input_shape = batch_input_shape
+
+    def __call__(self, inp):
+        with tf.variable_scope(self.my_scope) as var_scope:
+            with tf.name_scope(var_scope.original_name_scope):
+                assert isinstance(inp, tf.Tensor)
+                if self._batch_input_shape is not None:
+                    assert K.int_shape(inp) == self._batch_input_shape
+
+                params = self._params
+
+                a = inp
+                self._layers = []
+                with tf.variable_scope(params.op_name if 'op_name' in params else 'MLPStack'):
+                    # for i in xrange(len(self._params.layers_units)):
+                    for i, layerParams in enumerate(params.layers):
+                        layer = FCLayer(layerParams)
+                        a = layer(a, i)
+                        self._layers.append(layer)
+                return a
+
+    def create_summary_ops(self, coll_name):
+        with tf.variable_scope(self.my_scope) as var_scope:
+            with tf.name_scope(var_scope.original_name_scope):
+                for layer in self._layers:
+                    layer.create_summary_ops(coll_name)
+
+class ConvLayerParams(HyperParams):
+    proto = (
+        PD('tb', "Tensorboard Params.",
+           instanceofOrNone(TensorboardParams)),
+        PD('activation_fn',
+              'The activation function to use. None signifies no activation function.',
+              ## iscallable((tf.nn.relu, tf.nn.tanh, tf.nn.sigmoid, None)),
+              iscallableOrNone(),
+              ),
+        PD('normalizer_fn',
+              'Normalizer function to use instead of biases. If set, biases are not used.',
+              iscallableOrNone(),
+              ),
+        PD('weights_initializer',
+              'Tensorflow weights initializer function',
+              iscallable(),
+              # tf.contrib.layers.xavier_initializer()
+              # tf.contrib.layers.variance_scaling_initializer()
+              ),
+        PD('biases_initializer',
+              'Tensorflow biases initializer function, e.g. tf.zeros_initializer(). ',
+              iscallable(),
+              ## tf.zeros_initializer()
+              ),
+        PD('weights_regularizer',
+              'L1 / L2 norm regularization',
+              iscallable(),
+              # tf.contrib.layers.l2_regularizer(scale, scope=None)
+              # tf.contrib.layers.l1_regularizer(scale, scope=None)
+              ),
+        PD('biases_regularizer',
+              'L1 / L2 norm regularization',
+              iscallableOrNone()
+              ),
+        PD('padding',
+            'Convnet padding: SAME or VALID',
+            ('SAME', 'VALID')
         ),
-        PD(
-            'image_shape_unframed',
-            'Shape of input images. Should be a python sequence.'
-            'This is superseded by image_shape which optionally includes an extra padding frame around the input image'
-            'Value is loaded from the dataset and is not configurable.',
-            issequenceof(int),
-            # Set dynamically based on dataset.
-        ),
-        PD(
-            'MaxSeqLen',
-            "Max sequence length including the end-of-sequence marker token. Is used to "
-            "limit the number of decoding steps. Value is loaded from the dataset and is not configurable.",
-            integer(151),
-            # Set dynamically based on dataset.
-        ),
-        PD(
-            'K',
-            'Vocabulary size including zero. Value is loaded from the dataset and is not configurable.',
-            (358, 557, 339),
-            # Set dynamically based on dataset.
-            # LambdaVal(lambda _, d: 557+1 if d.use_ctc_loss else 557) #get_vocab_size(data_folder) + 1 for Blank-Token
-        ),
-        PD(
-            'CTCBlankTokenID',
-            'ID of the space/blank token. By tf.nn.ctc requirement, blank token should be == K-1,'
-            'Value is loaded from the dataset and is not configurable.',
-            integerOrNone(),
-            # Set dynamically based on dataset.
-        ),
-        PD(
-            'SpaceTokenID',
-            'Space Token ID if present in the dataset.',
-            integerOrNone(),
-            # Set dynamically based on dataset.
-        ),
-        PD(
-            'NullTokenID',
-            'ID of the EOS token == Null Token. Must be zero. Its value is loaded from the dataset and is not configurable.',
-            (0,),
-            # Set dynamically based on dataset.
-        ),
-        PD(
-            'StartTokenID',
-            'ID of the begin-sequence token. The value is loaded from the dataset and is not configurable.',
-            (1,),
-            # Set dynamically based on dataset.
-        ),
-        ###############################
-        PD(
-            'build_image_context',
-            """
-            (enum): Type of decoder conv-net model to use:
-            0 => Do not build decoder conv-net. Use pre-generated image features instead.
-            1 => Use VGG16 Conv-Net model (imported from Keras).
-            2 => Use a custom conv-net (defined in make_hyper)
-            """,
-            (0, 1, 2)
-        ),
-        PD(
-            'build_scanning_RNN', '(boolean): Whether to build a regular RNN or a scanning RNN',
-            boolean,
-        ),
-        PD(
-            'B',
-            '(integer): Size of mini-batch for training, validation and testing graphs/towers. '
-            'NOTE: Batch-size for the data-reader is different and set under property "data_reader_B"',
+        PD('output_channels',
+            "(integer): Depth of output layer = Number of features/channels in the output." ,
             integer(1),
-        ),
-        PD(
-            'n',
-            "The variable n in the paper. The number of units in the decoder_lstm cell(s). "
-            "The paper uses a value of 1000.",
-            (1000, 1500),
-            1500
-        ),
-        PD(
-            'm',
-            '(integer): dimensionality of the embedded input vector (Ex).'
-            "Note: For a stacked CALSTM, the upper layers will be fed output of the previous CALSTM, "
-            "therefore their input dimensionality will not be equal to the embedding dimensionality, rather "
-            " it will be equal to output_size of the previous CALSTM. That's why this value needs to be "
-            "appropriately adjusted for upper CALSTM layers.",
-            (64, 3),
-            LambdaVal(lambda _, p: 3 if p.build_scanning_RNN else 64)
-        ),
-        PD(
-            'REGROUP_IMAGE',
-            """
-            Specifies how the image feature vectors should be grouped together 
-            along Height and Width axes. For e.g. if the original dimension of the context feature map was (3,33,512) 
-            - i.e. original H=3, original W=33 and D=512- and if REGROUP_IMAGE was (3,3) then the new 
-            context-map would have shape (1, 11, 512*3*3) resulting in H=1, W=33, D=4608 and L=33.
-            A None value implies no regrouping.
-            """,
-            issequenceofOrNone(int),
-        ),
-        PD('image_size',
-           'Older image-size was "small". Newer one is "big"',
-           ('small', 'big'),
-           'big'
+            ),
+        PD('kernel_shape',
+            '(sequence): shape of kernel',
+            issequenceof(int)
+            ),
+        PD('stride',
+            '(sequence): shape of stride',
+            issequenceof(int)
+            ),
+    )
+    def __init__(self, initVals=None):
+        HyperParams.__init__(self, self.proto, initVals)
+
+    @classmethod
+    def get_kernel_half(cls, self_d):
+        # self_d is this class distilled into a dictionary
+        kernel_shape = self_d['kernel_shape']
+        assert (kernel_shape[0] % 2 == 1) and (kernel_shape[1] % 2 == 1)
+        return kernel_shape[0] // 2, kernel_shape[1] // 2
+
+
+ConvLayerParamsProto = ConvLayerParams().protoD
+
+
+class ConvStackParams(HyperParams):
+    proto = (
+        PD('tb', "Tensorboard Params.",
+           instanceofOrNone(TensorboardParams)),
+        PD('op_name',
+           'Name of the stack; will show up in tensorboard visualization',
+           None,
            ),
-        PD(
-            'H0', 'Height of feature-map produced by conv-net. Specific to the dataset image size.',
-            integer(1),
-            LambdaVal(lambda _, p: 4 if (p.image_size == 'big') else 3)
-            # LambdaVal(lambda _, p: 8 if (p.build_image_context == 2) else (4 if p.dataset == 3 else 3))
-        ),
-        PD(
-            'W0', 'Width of feature-map produced by conv-net. Specific to the dataset image size.',
-            integer(1),
-            LambdaVal(lambda _, p: 34 if (p.image_size == 'big') else 33)
-            # LambdaVal(lambda _, p: 68 if (p.build_image_context == 2) else (34 if p.dataset == 3 else 33))
-        ),
-        PD(
-            'L0',
-            '(integer): number of pixels in an image feature-map coming out of conv-net = H0xW0 (see paper or model description)',
-            integer(1),
-            LambdaVal(lambda _, p: p.H0 * p.W0)
-        ),
-        PD(
-            'D0',
-            '(integer): number of features coming out of the conv-net. Depth/channels of the last conv-net layer.'
-            'See paper or model description.',
-            integer(1),
-            512),
-        PD(
-            'H', 'Height of feature-map produced fed to the decoder.',
-            integer(1),
-            LambdaVal(lambda _, p: p.H0 if (p.REGROUP_IMAGE is None) else p.H0 / p.REGROUP_IMAGE[0])
-        ),
-        PD(
-            'W', 'Width of feature-map fed to the decoder.',
-            integer(1),
-            LambdaVal(lambda _, p: p.W0 if (p.REGROUP_IMAGE is None) else p.W0 / p.REGROUP_IMAGE[1])
-        ),
-        PD(
-            'L',
-            '(integer): number of pixels in an image feature-map fed to the decoder = HxW (see paper or model description)',
-            integer(1),
-            LambdaVal(lambda _, p: p.H * p.W)
-        ),
-        PD(
-            'D',
-            '(integer): number of image-features fed to the decoder. Depth/channels of the last conv-net layer.'
-            'See paper or model description.',
-            integer(1),
-            LambdaVal(
-                lambda _, p: p.D0 if (p.REGROUP_IMAGE is None) else p.D0 * p.REGROUP_IMAGE[0] * p.REGROUP_IMAGE[1])),
-        PD(
-            'tb', "Tensorboard Params.",
-            instanceof(TensorboardParams),
-        ),
-        PD(
-            'dropout',
-            'Dropout parameters if any - global. Absence of this property '
-            'signals no dropouts. If this is non-None, then weights regularizer should be None.',
-            instanceofOrNone(DropoutParams)
-        ),
-        PD(
-            'dtype',
-            'tensorflow float type for the entire model.',
-            (tf.float32, tf.float64),
-            tf.float32
-        ),
-        PD(
-            'dtype_np',
-            'dtype for the entire model.',
-            (np.float32, np.float64),
-            np.float32
-        ),
-        PD(
-            'int_type',
-            'tensorflow int type for the entire model.',
-            (tf.int32, tf.int64),
-            tf.int32
-        ),
-        PD(
-            'int_type_np',
-            'numpy inttype for the entire model.',
-            (np.int32, np.int64),
-            np.int32
-        ),
-        PD(
-            'weights_initializer',
-            'Tensorflow weights initializer function',
-            iscallable(),
-            tf.contrib.layers.xavier_initializer(uniform=True, dtype=tf.float32)  ## = glorot_uniform
-            # tf.contrib.layers.variance_scaling_initializer()
-        ),
-        PD(
-            'biases_initializer',
-            'Tensorflow biases initializer function, e.g. tf.zeros_initializer(). ',
-            iscallable(),
-            tf.zeros_initializer()
-        ),
-        PD(
-            'rLambda',
-            'Lambda value (scale) for regularizer.',
-            decimal(),
-        ),
-        PD(
-            'weights_regularizer',
-            'L1 / L2 norm regularization. If this is non-None then dropout should be None.',
-            iscallableOrNone(),
-            # tf.contrib.layers.l2_regularizer(scale=1.0, scope='L2_Regularizer')
-            # tf.contrib.layers.l1_regularizer(scale=1.0, scope="L1_Regularizer")
-        ),
-        PD(
-            'use_ctc_loss',
-            "Whether to train using ctc_loss or cross-entropy/log-loss/log-likelihood. In either case "
-            "ctc_loss will be logged. Also, use_ctc_loss must be turned on if building scanning-RNN.",
-            boolean,
-            LambdaVal(lambda _, p: p.build_scanning_RNN)
-        ),
-        PD(
-            'biases_regularizer',
-            'L1 / L2 norm regularization',
-            iscallable(noneokay=True),
-            None),
-        PD(
-            'use_peephole',
-            '(boolean): whether to employ peephole connections in the decoder LSTM',
-            (True, False),
-            True),
-        PD(
-            'logger', 'Python logger object for logging.',
-            instanceof(logging.Logger)
-        ),
+        PD('layers',
+           '(sequence of *Params): Sequence of layer params. Each value should be either of type ConvLayerParams '
+           'or MaxpoolParams. ',
+           instanceof(tuple)
+           ),
     )
 
     def __init__(self, initVals=None):
-        dlc.HyperParams.__init__(self, self.proto, initVals)
-        self._trickledown()
+        HyperParams.__init__(self, self.proto, initVals)
 
-    def _trickledown(self):
+    @staticmethod
+    def isConvLayer(layer_d):
+        # layer_d is *LayerParams distilled into a dict
+        return isinstance(layer_d, ConvLayerParams) or (
+                ('output_channels' in layer_d) and ('weights_initializer' in layer_d) and ('kernel_shape' in layer_d) and (
+                'stride' in layer_d) and ('padding' in layer_d))
 
-        data_props = np.load(os.path.join(self.raw_data_dir, 'data_props.pkl'))
-        num_channels = 1 if (self.build_image_context == 2) else 3
-        self.image_shape_unframed = (data_props['padded_image_dim']['height'], data_props['padded_image_dim']['width'], num_channels)
+    @staticmethod
+    def isPoolLayer(layer_d):
+        # layer_d is *LayerParams distilled into a dict
+        return isinstance(layer_d, MaxpoolParams) or (
+                ('output_channels' not in layer_d) and ('weights_initializer' not in layer_d) and (
+                'kernel_shape' in layer_d) and ('stride' in layer_d) and ('padding' in layer_d))
 
-        self.MaxSeqLen = data_props['MaxSeqLen']
-        self.SpaceTokenID = data_props['SpaceTokenID']
-        self.NullTokenID = data_props['NullTokenID']
-        self.StartTokenID = data_props['StartTokenID']
-        if self.SpaceTokenID is not None:
-            if False: # self.use_ctc_loss:
-                self.K = data_props['K'] + 1
-                self.CTCBlankTokenID = self.K - 1
-            else:
-                self.K = data_props['K']
-                self.CTCBlankTokenID = None
-        else:
-            self.K = data_props['K'] + 1
-            self.CTCBlankTokenID = self.K - 1
+    @classmethod
+    def get_numConvLayers(cls, slf_d):
+        # slf_d is ConvStackParams distilled into a dict
+        # if 'numConvLayers' in slf_d:
+        #     return slf_d['numConvLayers']
+        # else:
+        n = 0
+        for layer in slf_d['layers']:
+            if cls.isConvLayer(layer):
+                n += 1
+        return n
 
-    def __copy__(self):
-        ## Shallow copy
-        return self.__class__(self)
-    def copy(self, override_vals={}):
-        ## Shallow copy
-        return self.__class__(self).updated(override_vals)
+    @classmethod
+    def get_numPoolLayers(cls, slf_d):
+        # slf_d is ConvStackParams distilled into a dict
+        # if 'numPoolLayers' in slf_d:
+        #     return slf_d['numPoolLayers']
+        # else:
+        n = 0
+        for layer in slf_d['layers']:
+            if cls.isPoolLayer(layer):
+                n += 1
+        return n
 
-class CALSTMParams(dlc.HyperParams):
-    proto = GlobalParams.proto + (
-        ### Attention Model Params ###
-        PD(
-            'att_layers', 'MLP or Convnet parameters for attention model',
-            dlc.either(instanceof(MLPParams), instanceof(ConvStackParams)),
-            ## Set dynamically in self._trickledown()
-        ),
-        PD(
-            'att_model',
-            'Whether the attention model should share weights across the "L" image locations - i.e. perform a 1x1 convolution - or use a straight MLP.'
-            'Choosing "MLP_shared" conforms to the paper resulting in a (D+n,att_1_n) kernel (similar to 1x1 convolution but implemented as an MLPStack).'
-            'Choosing "1x1_conv" results in a 1x1 convolution-stack implementation instead of shared-MLP as above. The model should be identical to that obtained'
-            'by setting att_model=MLP_shared (plus equivalent num_units and same activation functions)'
-            'Choosing "MLP_full" will result in a standard MLP whose input is the entire flattened image feature vector concatenated with h(t-1), resulting '
-            'in a vector size (L*D + n) and a weight matrix of size (L*D+n,att_1_n). That is, the kernel will receive input from all the "L" '
-            "locations of image feature-map (in addition to h(t-1)) as against only one location in the MLP_shared or 1x1_conv cases.",
-            ('MLP_shared', '1x1_conv', 'MLP_full'),
-        ),
-        PD(
-            'att_modulator',
-            'A neural-network whose scalar output modulates the soft context signal "z_t" in comparison to the embedded-label signal fed into the decoder LSTM.'
-            'Serves as an "equalizer knob" that either amplifies or attenuates the context input signal versus the embedded-label input signal to the LSTM.'
-            'In the paper this scalar-value is called "beta" and in their code it is called the "selector". They implemented it as the output of a sigmoid and hence a value between 0 and 1.'
-            "We'll use a generic MLP stack with either a sigmoid activation in the last layer or a relu (in wchich case the modulator can take values greater than 1). "
-            "Input to this MLP is the h(t-1) - the previous LSTM output.",
-            instanceof(MLPParams),
-        ),
-        PD(
-            'build_att_modulator',
-            '(boolean): Turns on/off the att_modulator function.',
-            boolean
-        ),
-        PD(
-            'feed_clock_to_att',
-            'Turns on/off feeding scanning clock into the attention model. Only applicable for scanning-RNN.',
-            boolean,
-            LambdaVal(lambda _, p: True if p.build_scanning_RNN else None)
-        ),
-        PD(
-            'no_clock_to_lstm',
-            'Turns on/off feeding scanning clock into the decoder-LSTM. Only applicable for scanning-RNN.',
-            boolean,
-            LambdaVal(lambda _, p: True if p.build_scanning_RNN else None)
-        ),
-        ### Decoder LSTM Params ###
-        PD(
-            'decoder_lstm',
-            'Decoder LSTM parameters. Multiple LSTM layers are supported.',
-            instanceof(RNNParams),
-            ## Set dynamically in self._trickledown()
+
+class ConvStack(object):
+    def __init__(self, params, batch_input_shape=None):
+        self.my_scope = tf.get_variable_scope()
+        self._params = ConvStackParams(params)
+        self._batch_input_shape = batch_input_shape
+
+    def __call__(self, inp):
+        with tf.variable_scope(self.my_scope) as var_scope:
+            with tf.name_scope(var_scope.original_name_scope):
+                assert isinstance(inp, tf.Tensor)
+                if self._batch_input_shape is not None:
+                    assert K.int_shape(inp) == self._batch_input_shape
+
+                params = self._params
+
+                a = inp
+                with tf.variable_scope(params.op_name if 'op_name' in params else 'ConvStack'):
+                    for i, layerParams in enumerate(params.layers):
+                        if isinstance(layerParams, ConvLayerParams):
+                            a = ConvLayer(layerParams)(a, i)
+                        elif isinstance(layerParams, MaxpoolParams):
+                            a = MaxpoolLayer(layerParams)(a, i)
+                        elif isinstance(layerParams, DropoutParams):
+                            a = DropoutLayer(layerParams)(a, i)
+                        else:
+                            raise AttributeError('Unsupported params class (%s) found in ConvStackParams.layers'%layerParams.__class__.__name__)
+                return a
+
+class ConvLayer(object):
+    def __init__(self, params, batch_input_shape=None):
+        self.my_scope = tf.get_variable_scope()
+        self._params = ConvLayerParams(params)
+        self._batch_input_shape = batch_input_shape
+
+    def __call__(self, inp, layer_idx=None):
+        with tf.variable_scope(self.my_scope) as var_scope:
+            with tf.name_scope(var_scope.original_name_scope):
+                ## Parameter Validation
+                assert isinstance(inp, tf.Tensor)
+                if self._batch_input_shape is not None:
+                    assert K.int_shape(inp) == self._batch_input_shape
+
+                params = self._params
+                scope_name = 'Conv' + '_%d'%(layer_idx+1) if layer_idx is not None else 'Conv'
+                with tf.variable_scope(scope_name) as var_scope:
+                    coll_w = scope_name + '/_weights_'
+                    coll_b = scope_name + '/_biases_'
+                    var_colls = {'biases':[coll_b], 'weights':[coll_w, "REGULARIZED_WEIGHTS"]}
+                    # var_colls['weights'] = [coll_w, "REGULARIZED_WEIGHTS"] if (params.weights_regularizer is not None) else [coll_w]
+                    assert params.weights_regularizer is not None
+
+                    a = tf.keras.layers.Conv2D(inputs=inp,
+                                                num_outputs=params.output_channels,
+                                                kernel_size=params.kernel_shape,
+                                                stride=params.stride,
+                                                padding=params.padding,
+                                                activation_fn=params.activation_fn,
+                                                normalizer_fn=params.normalizer_fn if 'normalizer_fn' in params else None,
+                                                trainable=True,
+                                                weights_initializer=params.weights_initializer,
+                                                biases_initializer=params.biases_initializer,
+                                                # weights_regularizer=params.weights_regularizer,
+                                                # biases_regularizer=params.biases_regularizer,
+                                                data_format='NHWC',
+                                                variables_collections=var_colls
+                                                )
+
+                    # Tensorboard Summaries
+                    self._weights = tf.get_collection(coll_w)
+                    self._biases = tf.get_collection(coll_b)
+                    self._a = a
+
+                # if (self._batch_input_shape):
+                #     a.set_shape(self._batch_input_shape[:-1] + (params.num_units,))
+
+                return a
+
+    def create_summary_ops(self, coll_name):
+        with tf.variable_scope(self.my_scope) as var_scope:
+            with tf.name_scope(var_scope.original_name_scope):
+                params = self._params
+                if params.tb is not None:
+                    summarize_layer(self._weights, self._biases, self._a, coll_name)
+
+class MaxpoolParams(HyperParams):
+    proto = (
+        ConvLayerParamsProto.kernel_shape,
+        ConvLayerParamsProto.stride,
+        ConvLayerParamsProto.padding,
+        ConvLayerParamsProto.tb
         )
-    )
 
-    def __init__(self, initVals):
-       ## "Note: For a stacked CALSTM, the upper layers will be fed output of the previous CALSTM, "
-       ## "therefore their input dimensionality will not be equal to the embedding dimensionality, rather "
-       ## " it will be equal to output_size of the previous CALSTM. That's why the value of m needs to be "
-       ## "appropriately adjusted for upper CALSTM layers."
-        assert initVals['m'] is not None
-        dlc.HyperParams.__init__(self, self.proto, initVals, seal=False)
-        ## No dropout within CALSTM
-        self.dropout = None
-        self._trickledown()
+    def __init__(self, initVals=None):
+        HyperParams.__init__(self, self.proto, initVals)
 
-    def _trickledown(self):
-        """
-        Trickle down changes onto parameters in sub-tree(s) if needed.
-        (For same level dependencies use LambdaFunctions instead.)
-        Call at the end of __init__ and end of update.
-        """
+class MaxpoolLayer(object):
+    def __init__(self, params, batch_input_shape=None):
+        self.my_scope = tf.get_variable_scope()
+        self._params = MaxpoolParams(params)
+        self._batch_input_shape = batch_input_shape
 
-        #### Attention Model ####
-        if self.att_model == '1x1_conv':
-            self.att_layers = ConvStackParams({
-                'op_name': '1x1Conv',
-                'tb': self.tb,
-                # 'activation_fn': tf.nn.relu,
-                # 'weights_initializer': self.weights_initializer,
-                # 'biases_initializer': self.biases_initializer,
-                # 'weights_regularizer': self.weights_regularizer,
-                # 'biases_regularizer': self.biases_regularizer,
-                # 'padding': 'VALID',
-                'layers': (
-                    ## TODO: Try with relu activation
-                    ConvLayerParams(self).updated({'output_channels':self.D, 'kernel_shape':(1,1), 'stride':(1,1), 'padding':'VALID', 'activation_fn': tf.nn.tanh}).freeze(),
-                    ConvLayerParams(self).updated({'output_channels':self.D, 'kernel_shape':(1,1), 'stride':(1,1), 'padding':'VALID', 'activation_fn': tf.nn.tanh}).freeze(),
-                    ConvLayerParams(self).updated({'output_channels':1,      'kernel_shape':(1,1), 'stride':(1,1), 'padding':'VALID', 'activation_fn': None}).freeze()
-                    )
-                }).freeze()
-            assert self.att_layers.layers[-1].output_channels == 1, 'num output_channels of the final layer of the att_convnet should equal 1'
-            assert self.att_layers.layers[-1].activation_fn == None ## Softmax activation will be added after squeezing dims
+    def __call__(self, inp, layer_idx=None):
+        with tf.variable_scope(self.my_scope) as var_scope:
+            with tf.name_scope(var_scope.original_name_scope):
+                ## Parameter Validation
+                assert isinstance(inp, tf.Tensor)
+                if self._batch_input_shape is not None:
+                    assert K.int_shape(inp) == self._batch_input_shape
 
-        elif self.att_model == 'MLP_shared':
-            self.att_layers = MLPParams(self).updated({
-                'op_name': 'MLP_shared',
-                # Number of units in all layers of the attention model = D in the Show and Tell paper"s source-code.
-                'layers': (
-                    FCLayerParams(self).updated({'num_units': self.D, 'activation_fn': tf.nn.tanh, 'dropout': self.dropout}).freeze(),
-                    FCLayerParams(self).updated({'num_units': self.D, 'activation_fn': tf.nn.tanh, 'dropout': self.dropout}).freeze(),
-                    FCLayerParams(self).updated({'num_units': 1,      'activation_fn': None, 'dropout': None}).freeze(),
-                    )
-                }).freeze()
-            assert self.att_layers.layers[-1].num_units == 1, 'num_units of the final layer of the att_kernel should equal 1'
-            assert self.att_layers.layers[-1].activation_fn == None ## Softmax activation will be added after squeezing dims
-            assert self.att_layers.layers[-1].dropout == None ## No droput in the softmax layer
+                params = self._params
+                scope_name = 'MaxPool' + '_%d'%(layer_idx+1) if layer_idx is not None else 'MaxPool'
+                with tf.variable_scope(scope_name) as var_scope:
+                    layer_name = var_scope.name
+        #            coll_w = layer_name + '/' + params.tb.tb_weights
+        #            coll_b = layer_name + '/' + params.tb.tb_biases
 
-        elif self.att_model == 'MLP_full':
-            self.att_layers = MLPParams(self).updated({
-                'op_name': 'MLP_full',
-                'layers': (
-                    FCLayerParams(self).updated({'num_units': max(self.L, 256), 'activation_fn': tf.nn.tanh, 'dropout': self.dropout}).freeze(),
-                    FCLayerParams(self).updated({'num_units': max(self.L, 128), 'activation_fn': tf.nn.tanh, 'dropout': self.dropout}).freeze(),
-                    FCLayerParams(self).updated({'num_units': self.L, 'activation_fn': None,       'dropout': None}).freeze(),
-                    )
-                }).freeze()
-            assert self.att_layers.layers[-1].num_units == self.L, 'num_units of the final layer of the att_MLP should equal L(%d)'%self.L
-            assert self.att_layers.layers[-1].activation_fn == None ## softmax activation will be added in code for consistency
-            assert self.att_layers.layers[-1].dropout == None ## No droput before/after softmax activation
+                    a = tf.keras.layers.MaxPooling2D(inputs=inp,
+                                             kernel_size=params.kernel_shape,
+                                             stride=params.stride,
+                                             padding=params.padding,
+                                             data_format='NHWC')
 
-        #### Attention Modulator ####
-        if self.build_att_modulator:
-            self.att_modulator = MLPParams(self).updated({
-                'op_name': 'beta_MLP',
-                ## paper's code uses 1 layer only. The last-layer must have only one neuron os that the output is scalar.
-                'layers': (
-                    FCLayerParams(self).updated({'num_units': 1, 'activation_fn': tf.nn.sigmoid, 'dropout': None}).freeze(),
-                    )
-                }).freeze()
+                    self._a = a
 
-        #### LSTM-Stack ####
-        self.decoder_lstm = RNNParams(self).updated({
-            'B': self.B,
-            'i': self.D if (self.build_scanning_RNN and self.no_clock_to_lstm) else self.m + self.D,  # size of Ex_t + size of z_t.
-                # show-and-tell paper uses a value of n=1000
-            'layers_units': (self.n, self.n),
-            ## 'dropout': None # No dropout in LSTM
-            }).freeze()
+                # if (self._batch_input_shape):
+                #     a.set_shape(self._batch_input_shape[:-1] + (params.num_units,))
 
-        self.seal()
+                return a
 
-    def __copy__(self):
-        ## Shallow copy
-        return self.__class__(self)
-    def copy(self, override_vals={}):
-        ## Shallow copy
-        return self.__class__(self).updated(override_vals)
+    def create_summary_ops(self, coll_name):
+        with tf.variable_scope(self.my_scope) as var_scope:
+            with tf.name_scope(var_scope.original_name_scope):
+                params = self._params
+                if params.tb is not None:
+                    summarize_layer(None, None, self._a, coll_name)
 
-class Im2LatexModelParams(dlc.HyperParams):
-    proto = GlobalParams.proto + (
-        ### Training Parameters ####
-        PD(
-            'assert_whole_batch', '(boolean): Disallow batch size that is not integral factor '
-                                  'of the bin-size',
-            boolean,
-        ),
-        PD(
-            'squash_input_seq', '(boolean): Remove whitespace from target sequences',
-            boolean,
-        ),
-        PD(
-            'input_queue_capacity', 'Capacity of input queue.',
-            integer(1),
-            LambdaVal(lambda _, d: d.num_towers * 1)
-        ),
-        PD(
-            'DecodingSlack',
-            "Since we ignore blanks/spaces in loss and accuracy measurement, the network is free "
-            "to insert blanks into the decoded/predicted sequence. Therefore the predicted sequence "
-            "can be arbitrarily long. However, we need to limit the max decoded sequence length. We "
-            "do so by determining the extra slack to give to the network - the more slack we give it "
-            "presumably that much easier the learning will be. This parameter includes that slack. In "
-            "other words, MaxDecodeLen = MaxSeqLen + DecodingSlack",
-            integer(0),
-            20
-        ),
-        PD(
-            'MaxDecodeLen',
-            "See the description for MaxSeqLen and DecodingSlack",
-            integer(151),
-            LambdaVal(lambda _, p: p.MaxSeqLen + p.DecodingSlack)
-        ),
-        PD(
-            'SFactor',
-            'Applicable to Scanning LSTM only: Multiplier to derive MaxS from MaxSeqLen',
-            decimal(1.0),
-            LambdaVal(lambda _, p: 1.5 if p.build_scanning_RNN else None)
-        ),
-        PD(
-            'MaxS', 'Applicable to Scanning LSTM only: Max value of S for the given data-set',
-            integer(1),
-            LambdaVal(lambda _, p: int(p.MaxSeqLen * p.SFactor) if p.build_scanning_RNN else None)
-        ),
-        PD(
-            'no_ctc_merge_repeated',
-            "(boolean): Negated value of ctc_merge_repeated beamsearch_length_penatly for ctc operations",
-            boolean,
-            True),
-        PD(
-            'ctc_beam_width',
-            'Beam Width to use for ctc_beamsearch_decoder, which is different from the seq2seq.BeamSearchDecoder',
-            integer(1)
-        ),
-        PD(
-            'seq2seq_beam_width',
-            'Beam Width to use for seq2seq.BeamSearchDecoder, which is different from the ctc_beamsearch_decoder',
-            integer(1)
-        ),
-        PD(
-            'beamsearch_length_penalty',
-            'length_penalty_weight used by beamsearch decoder. Same as alpha value of length-penalty described in https://arxiv.org/pdf/1609.08144.pdf'
-            'In the paper they used a value of alpha in the range [0.6,0.7]. A value of 0 turns length-penalty off.',
-            decimal(0., 1.),
-            # 0.6
-        ),
-        PD(
-            'swap_memory',
-            'swap_memory option to tf.scan',
-            boolean,
-            False
-        ),
-        PD(
-            'tf_session_allow_growth',
-            'tf ConfigProto.gpu_option_allow_growth. Setting this will allow the gpu memory to be allocated incrementally instead of all at once.',
-            boolean,
-            # False
-        ),
-        PD(
-            'adam_alpha', '(float or None): alpha value (step, learning_rate) of adam optimizer.',
-            instanceof(float),
-            # 0.0001 # default in tf.train.AdamOptimizer is 0.001
-        ),
-        PD(
-            'adam_beta1',
-            'beta1 value of adam-optimizer. If undefined here, the default in tf.train.AdamOptimizer is is 0.9.',
-            decimal(0., 1.),
-        ),
-        PD(
-            'adam_beta2',
-            'beta2 value of adam-optimizer. If undefined here, the default in tf.train.AdamOptimizer is is 0.999.',
-            decimal(0., 1.),
-            # 0.9
-        ),
-        PD(
-            'optimizer',
-            'tensorflow optimizer function (e.g. AdamOptimizer).',
-            ('adam',),
-            'adam'
-        ),
-        PD(
-            'no_towers',
-            'Should be always set to False. Indicates code-switch to build without towers which will not work',
-            (False,),
-            False
-        ),
-        PD(
-            'num_gpus', 'Number of GPUs employed in parallel',
-            integer(1)
-        ),
-        PD(
-            'towers_per_gpu',
-            """
-            Number of towers per GPU running concurrently. Multiple towers per gpu are 
-            needed in order to circumvent OOM errors.""",
-            integer(1)
-        ),
-        PD(
-            'num_towers',
-            """
-            Number of towers per GPU running concurrently. Multiple towers per gpu are 
-            needed in order to circumvent OOM errors.""",
-            integer(1),
-            LambdaVal(lambda _, p: p.num_gpus * p.towers_per_gpu)
-        ),
-        PD(
-            'data_reader_B', 'batch_size for the data_reader',
-            integer(1),
-            LambdaVal(lambda _, d: d.B * d.num_towers)
-        ),
-        ### Embedding Layer ###
-        PD(
-            'embeddings_initializer', 'Initializer for embedding weights',
+class DropoutLayer(object):
+    def __init__(self, params, batch_input_shape=None):
+        self.my_scope = tf.get_variable_scope()
+        self._params = DropoutParams(params)
+        self._batch_input_shape = batch_input_shape
+
+    def __call__(self, inp, layer_idx=None):
+        with tf.variable_scope(self.my_scope) as var_scope:
+            with tf.name_scope(var_scope.original_name_scope) as name_scope:
+                ## Parameter Validation
+                assert isinstance(inp, tf.Tensor)
+                if self._batch_input_shape is not None:
+                    assert K.int_shape(inp) == self._batch_input_shape
+
+                params = self._params
+                scope_name = 'Dropout_%d'%(layer_idx+1) if layer_idx is not None else 'Dropout'
+                with tf.variable_scope(scope_name):
+                    if len(K.int_shape(inp)) != 2:
+                        logger.warn('Input to operation %s/%s has rank !=2 (%d)', name_scope, scope_name, len(K.int_shape(inp)))
+                    return tf.nn.dropout(inp, params.keep_prob, seed=params.seed)
+
+class ActivationParams(HyperParams):
+    proto = (
+        PD('tb', "Tensorboard Params.",
+           instanceofOrNone(TensorboardParams)),
+        PD('activation_fn',
+            'The activation function to use.',
+            ## iscallable((tf.nn.relu, tf.nn.tanh, tf.nn.sigmoid, None)),
             iscallable(),
-            ## tf.contrib.layers.xavier_initializer()
-            equalto('weights_initializer')
-        ),
-        PD(
-            'embeddings_regularizer',
-            'L1 / L2 norm regularization',
-            iscallableOrNone(),
-            equalto('weights_regularizer')
-        ),
-        ### ConvNet Params ###
-        PD(
-            'CONVNET', 'ConvStackParams for the convent',
-            instanceofOrNone(ConvStackParams),
-            ## Value is set dynamically inside make_hyper
-        ),
-        PD(
-            'image_frame_width',
-            'Width of an extra padding frame around the (possibly already padded) image. This extra padding is used '
-            'in order to ensure that there is enough whites-space around the edges of the image, so as to enable VALID padding '
-            'in the first conv-net layer without losing any information. The effect of doing this is to simulate SAME padding '
-            'but using custom padding values (background color in this case) instead of zeroes (which is what SAME padding would do). '
-            'This value should be equal to (kernel_size)//2 using kernel_size of the first convolution layer.'
-            ,
-            integer(),
-            LambdaVal(lambda _, p: 0 if (p.build_image_context != 2) else (p.CONVNET.layers[0].kernel_shape[0]) // 2)
-            ## Dynamically set to = (kernel_size-1)/2 given kernel_size of first conv-net layer
-        ),
-        PD(
-            'image_shape',
-            'Shape of input images. Should be a python sequence.'
-            '= image_shape_unpadded + image_frame_width around it',
-            issequenceof(int),
-            LambdaVal(lambda _, p: pad_image_shape(p.image_shape_unframed, p.image_frame_width))
-            ## = get_image_shape(raw_data_folder, num_channels, image_frame_width)
-        ),
-        ### Decoder CALSTM Params ###
-        PD(
-            'CALSTM_STACK',
-            'sequence of CALSTMParams, one for each CALSTM layer in the stack. The paper '
-            "has code for more than one layer, but mentions that it is not well-tested. I take that to mean "
-            "that the published results are based on one layer alone.",
-            issequenceof(CALSTMParams)
-        ),
-        ### Output MLP
-        PD(
-            'output_reuse_embeddings',
-            '(boolean): Output layer in the paper has a special first layer which considers embedding weights as part of the first-layer weight matrix.'
-            'Setting this value to True (default) will follow the paper"s logic. Otherwise'
-            "a straight MLP will be used wherein all inputs (including Ey(t-1)) are first concatenated and fed into an MLP."
-            "Including the softmax layer, the paper uses a minimum of 2 layers.",
-            boolean,
-            # True
-        ),
-        PD(
-            'outputMLP_skip_connections',
-            '(boolean): Applicable only when output_reuse_embeddings==False. Setting this value to False will cause'
-            'image context (z_t) and sequence input (Ex_t) to not be fed into the output MLP. If True (Default), the'
-            'output MLP receives a concatenation of Ex_t, h_t and z_t as input. If set to False, only h_t is input.',
-            boolean,
-            True
-        ),
-        PD(
-            'output_first_layer', "Some params of first layer of output MLP if output_reuse_embeddings==True",
-            instanceof(Properties)
-            ## Value set dynamically inside self._trickledown() iff output_reuse_embeddings==True
-        ),
-        PD(
-            'output_layers',
-            "(MLPParams): Parameters for the output MLP. The last layer outputs the logits and therefore "
-            "must have num_units = K. If output_reuse_embeddings==True, an additional initial layer is created "
-            "with num_units = m and activtion tanh. Therefore the min number of layers is 2 in that case. "
-            "Note: In the paper all layers have num_units=m except the last(softmax) layer.",
-            instanceof(MLPParams),
-            ## Value set dynamically inside self._trickledown()
-        ),
-        ### Initializer MLP ###
-        PD(
-            'build_init_model',
-            """ 
-            Boolean parameter specifying whether or not to build the LSTM init_state model. If set to False zero-state
-            will be used for init-state, otherwise a init-state model will be created based on other init_model_*
-            params.
-            """,
-            boolean
-        ),
-        PD(
-            'init_model_input_transform',
-            """
-            Transform to apply to the image-context input to the init model. Only applies if build_init_model == True.
-            'mean' implies take a mean across the 'L' image-locations and produce an input of size (batchsize, D).
-            'full' implies take in all the 'L' features and produce an input tensor of shape (batchsize, L*D).
-                Note that with this option the # of parameters in the first layer will go up by a factor of L i.e.
-                around 100x.
-            """,
-            ('mean', 'full')
-        ),
-        PD(
-            'init_model_hidden',
-            'MLP stack for hidden layers of the init_state model. In addition to the stack specified here, an additional FC '
-            "layer will be forked off at the top for each 'c' and 'h' state in the RNN Im2LatexDecoderRNN state."
-            "Hence, this is a 'multi-headed' MLP because it has multiple top-layers."
-            "By default their implementation has num_hidden_layers==0 (i.e. n_layers_init==1).",
-            instanceof(MLPParams),
-            ## Value set dynamically inside self._trickledown()
-        ),
-        PD(
-            'init_model_final_layers', '',
-            instanceof(FCLayerParams),
-            ## Value set dynamically inside self._trickledown()
-        ),
-        ### Loss / Cost Layer ###decoder_lstm
-        PD(
-            'sum_logloss',
-            'Whether to normalize log-loss per sample as in standard log perplexity '
-            'calculation or whether to just sum up log-losses as in the paper. Defaults'
-            'to True in conformance with the paper.',
-            boolean,
-            # True
-        ),
-        PD(
-            'MeanSumAlphaEquals1',
-            '(boolean): When calculating the alpha penalty, the paper uses the term: '
-            'square{1 - sum_over_t{alpha_t_i}}). This assumes that the mean sum_over_t should be 1. '
-            "However, that's not true, since the mean of sum_over_t term should be C/L. This "
-            "variable if set to True, causes the term to change to square{C/L - sum_over_t{alpha_t_i}}). "
-            "The default value is True in conformance with the paper.",
-            boolean,
-            # True
-        ),
-        PD(
-            'pLambda',
-            'Lambda value for alpha penalty, Setting this to zero turns off alpha_penalty.',
-            (0.0,  0.0005, 0.005, 0.0001, 0.05),
-            # LambdaVal(lambda _, p: 0.005 if p.build_scanning_RNN else 0.000)
-        ),  # default in the show-and-tell paper is .00001?
-        PD(
-            'target_aae',
-            """
-            Target mean_norm_AAE value to shoot for. Varies with data-set. Value discovered by experimentation.
-            """,
-            (0., 51.42, 51.79),
-            # LambdaVal(lambda _, p: None if (p.pLambda == 0) else 51.42)
-        ),
-        PD(
-            'target_ase',
-            """
-            Target mean_norm_ASE value to shoot for. Varies with data-set. Value discovered by experimentation.
-            """,
-            (0.0, 5.27, 5.35, 10.0),
-            # LambdaVal(lambda _, p: None if (p.pLambda == 0) else (10.0 if p.build_scanning_RNN else 5.27))
-            LambdaVal(lambda _, p: None if (p.pLambda == 0) else 5.27)
-        ),
-        PD(
-            'k', 'Number of top-scoring beams to consider for best-of-k metrics.',
-            integer(1),
-            # Value specified in run.py
+            ),
+        PD('dropout', 'Dropout parameters if any.',
+           instanceof(DropoutParams)),
         )
-    )
-
-    def __init__(self, initVals):
-        dlc.HyperParams.__init__(self, self.proto, initVals, seal=False)
-        self._trickledown()
-
-    def _trickledown(self):
-        """
-        Trickle changes down to dependant parameters in sub-tree(s).
-        (For same level dependencies use LambdaFunctions instead.)
-        Call at the end of __init__ and end of update.
-        """
-        ######## Output Model ########
-        if self.output_reuse_embeddings:
-            assert not self.build_scanning_RNN, 'Scanning RNN cannot reuse-embeddings because there are no embeddings'
-            self.output_first_layer = FCLayerParams(self).updated({
-                'num_units': self.m,
-                'activation_fn': tf.nn.tanh,  # Shouldn't this be None?
-                # dropout imported from outer scope
-                }).freeze()
-
-            self.output_layers = MLPParams(self).updated({
-                # One layer with num_units = m is added if output_reuse_embeddings == True
-                'op_name': 'yLogits_MLP',
-                # dropout imported from outer scope
-                'layers': (
-                    ## paper has activation set to relu for all but the softmax layer
-                    ## paper has all hidden layers with num_units = m.
-                    # TODO: num_units should probably be self.K otherwise the model is a reverse pyramid
-                    FCLayerParams(self).updated({'num_units': 64, 'activation_fn':tf.nn.relu}).freeze(),
-                    ## Last layer must have num_units = K and activation_fn=None because it outputs logits.
-                    FCLayerParams(self).updated({'num_units': self.K, 'activation_fn': None, 'dropout': None}).freeze(),
-                    )
-                }).freeze()
-        else:
-            self.output_layers = MLPParams(self).updated({
-                'op_name': 'yLogits_MLP',
-                'layers': (
-                    # paper has activation set to relu for all but the softmax layer
-                    # paper has all hidden layers with num_units = m.
-                    FCLayerParams(self).updated({'num_units': 358, 'activation_fn':tf.nn.tanh}).freeze(),
-                    FCLayerParams(self).updated({'num_units': 358, 'activation_fn':tf.nn.tanh}).freeze(),
-                    # Last layer must have num_units = K and activation_fn=None because it outputs logits.
-                    FCLayerParams(self).updated({'num_units': self.K, 'activation_fn': None, 'dropout': None}).freeze(),
-                    )
-                }).freeze()
-
-        assert self.output_layers.layers[-2].num_units >= self.K
-        assert self.output_layers.layers[-1].activation_fn == None, 'The last layer must have linear activation because softmax is added later (since we need logits for efficient cross-entropy calculation)'
-        if (not self.output_reuse_embeddings):
-            assert len(self.output_layers.layers) >= 2, "Need one hidden layer at least to match the paper's complexity."
-
-        ######## Init Model ########
-        if self.build_init_model:
-            # Note: There are no hidden init layers by default in the Show&Tell paper
-            self.init_model_hidden = MLPParams(self).updated({
-                'layers': (
-                    # Show&Tell paper sets hidden activations=relu
-                    # The Show&Tell paper's source sets all hidden units to D
-                    FCLayerParams(self).updated({'num_units': min(self.D, 100), 'activation_fn': tf.nn.tanh}).freeze(),
-                )
-                }).freeze()
-
-            self.init_model_final_layers = FCLayerParams(self).updated({
-                # Show&Tell paper sets final=tanh
-                'activation_fn': tf.nn.tanh,
-                'dropout': None
-                }).freeze()
-
+    def __init__(self, initVals=None):
+        HyperParams.__init__(self, self.proto, initVals)
     def __copy__(self):
         ## Shallow copy
         return self.__class__(self)
+
     def copy(self, override_vals={}):
         ## Shallow copy
         return self.__class__(self).updated(override_vals)
 
-def make_hyper(initVals={}, freeze=True):
-    initVals = dlc.Properties(initVals)
-    ## initVals.image_frame_width = 1
-    globals = GlobalParams(initVals)
-    initVals.update(globals)
+class Activation(object):
+    def __init__(self, params, batch_input_shape=None):
+        self.my_scope = tf.get_variable_scope()
+        self._params = ActivationParams(params)
+        self._batch_input_shape = batch_input_shape
 
-    # assert (globals.rLambda == 0) or (globals.dropout is None), 'Both dropouts and weights_regularizer are non-None'
+    def __call__(self, inp, layer_idx=None):
+        with tf.variable_scope(self.my_scope) as var_scope:
+            with tf.name_scope(var_scope.original_name_scope) as name_scope:
+                ## Parameter Validation
+                assert isinstance(inp, tf.Tensor)
+                if self._batch_input_shape is not None:
+                    assert K.int_shape(inp) == self._batch_input_shape
 
-    CALSTM_1 = CALSTMParams(initVals).freeze()
-    # CALSTM_2 = CALSTM_1.copy({'m':CALSTM_1.decoder_lstm.layers_units[-1]}).freeze()
-    # CALSTM_2 = CALSTMParams(initVals.copy().updated({'m':CALSTM_1.decoder_lstm.layers_units[-1]})).freeze()
+                params = self._params
 
-    if globals.build_image_context != 2:
-        CONVNET = None
-    else:
-        convnet_common = {
-            'weights_initializer': globals.weights_initializer,
-            'biases_initializer': globals.biases_initializer,
-            'weights_regularizer': globals.weights_regularizer,
-            'biases_regularizer': globals.biases_regularizer,
-            'activation_fn': tf.nn.tanh,  # vgg16 has tf.nn.relu
-            'padding': 'SAME',
-        }
+                scope_name = 'Activation_%d'%(layer_idx+1) if layer_idx is not None else 'Activation'
+                with tf.variable_scope(scope_name):
+                    if len(K.int_shape(inp)) != 2:
+                        logger.warn('Input to operation %s/%s has rank !=2 (%d)', name_scope, scope_name, len(K.int_shape(inp)))
+                    a = params.activation_fn(inp)
 
-        # CONVNET = ConvStackParams({
-        #     'op_name': 'Convnet',
-        #     'tb': globals.tb,
-        #     'layers': (
-        #         ConvLayerParams(convnet_common).updated({'output_channels': 256, 'kernel_shape':(3,3), 'stride':(1,1), 'padding':'VALID'}).freeze(),
-        #         # ConvLayerParams(convnet_common).updated({'output_channels': 512, 'kernel_shape':(3,3), 'stride':(1,1)}).freeze(),
-        #         MaxpoolParams(convnet_common).updated({'kernel_shape':(2,2), 'stride':(2,2)}).freeze(),
-        #
-        #         ConvLayerParams(convnet_common).updated({'output_channels':128, 'kernel_shape':(3,3), 'stride':(1,1)}).freeze(),
-        #         MaxpoolParams(convnet_common).updated({'kernel_shape':(2,2), 'stride':(2,2)}).freeze(),
-        #
-        #         ConvLayerParams(convnet_common).updated({'output_channels':128, 'kernel_shape':(3,3), 'stride':(1,1)}).freeze(),
-        #         MaxpoolParams(convnet_common).updated({'kernel_shape':(2,2), 'stride':(2,2)}).freeze(),
-        #
-        #         ConvLayerParams(convnet_common).updated({'output_channels':128, 'kernel_shape':(3,3), 'stride':(1,1)}).freeze(),
-        #         MaxpoolParams(convnet_common).updated({'kernel_shape': (2, 2), 'stride': (2, 2)}).freeze(),
-        #
-        #         ConvLayerParams(convnet_common).updated({'output_channels':128, 'kernel_shape':(3,3), 'stride':(1,1)}).freeze(),
-        #         MaxpoolParams(convnet_common).updated({'kernel_shape':(2,2), 'stride':(2,2)}).freeze(),
-        #     )
-        # }).freeze()
+                if ('dropout' in params) and (params.dropout is not None):
+                    a = DropoutLayer(params.dropout, self._batch_input_shape)(a)
 
-        CONVNET = ConvStackParams({
-            'op_name': 'Convnet',
-            'tb': globals.tb,
-            'layers': (
-                ConvLayerParams(convnet_common).updated({'output_channels': 64, 'kernel_shape':(3,3), 'stride':(1,1), 'padding':'VALID'}).freeze(),
-                # ConvLayerParams(convnet_common).updated({'output_channels': 64, 'kernel_shape':(3,3), 'stride':(1,1)}).freeze(),
-                MaxpoolParams(convnet_common).updated({'kernel_shape':(2,2), 'stride':(2,2)}).freeze(),
+                self._a = a
+                return a
 
-                ConvLayerParams(convnet_common).updated({'output_channels':128, 'kernel_shape':(3,3), 'stride':(1,1)}).freeze(),
-                MaxpoolParams(convnet_common).updated({'kernel_shape':(2,2), 'stride':(2,2)}).freeze(),
+    def create_summary_ops(self, coll_name):
+        with tf.variable_scope(self.my_scope) as var_scope:
+            with tf.name_scope(var_scope.original_name_scope) as scope_name:
+                if self._params.tb is not None:
+                    summarize_layer(None, None, self._a, coll_name)
 
-                ConvLayerParams(convnet_common).updated({'output_channels':256, 'kernel_shape':(3,3), 'stride':(1,1)}).freeze(),
-                MaxpoolParams(convnet_common).updated({'kernel_shape':(2,2), 'stride':(2,2)}).freeze(),
-
-                ConvLayerParams(convnet_common).updated({'output_channels':512, 'kernel_shape':(3,3), 'stride':(1,1)}).freeze(),
-                MaxpoolParams(convnet_common).updated({'kernel_shape': (2, 2), 'stride': (2, 2)}).freeze(),
-
-                ConvLayerParams(convnet_common).updated({'output_channels':512, 'kernel_shape':(3,3), 'stride':(1,1)}).freeze(),
-                MaxpoolParams(convnet_common).updated({'kernel_shape':(2,2), 'stride':(2,2)}).freeze(),
+class RNNParams(HyperParams):
+    proto = (
+            PD('B',
+               '(integer or None): Size of mini-batch for training, validation and testing.',
+               integerOrNone(1)
+               ),
+            PD('i',
+               '(integer): dimensionality of the input vector (Ey / Ex)',
+               integer(1)
+               ),
+            PD('type',
+               'Type of RNN cell to create. Only LSTM is supported at this time.',
+               ('lstm',),
+               'lstm'),
+            PD('dtype',
+               "dtype of data",
+               (tf.float32, tf.float64),
+               tf.float32),
+            PD('op_name',
+               'Name of the layer; will show up in tensorboard visualization',
+               None,
+               'LSTMWrapper'
+              ),
+            PD('layers_units',
+              "(sequence of integers): Either layers_units or num_units must be specified. Not both."
+              "Sequence of numbers denoting number of units for each layer."
+              "As many layers will be created as the length of the sequence",
+              issequenceofOrNone(int)
+              ),
+            CommonParamsProto.weights_initializer,
+            CommonParamsProto.weights_regularizer,
+            PD('use_peephole',
+               '(boolean): whether to employ peephole connections in the decoder LSTM',
+               (True, False),
+               True),
+            PD('forget_bias', '',
+               decimal(),
+               1.0),
+            PD('dropout', 'Dropout parameters if any.',
+               instanceofOrNone(DropoutParams)),
+            PD('tb', '',
+               instanceofOrNone(TensorboardParams))
             )
-        }).freeze()
+    def __init__(self, initVals=None):
+        HyperParams.__init__(self, self.proto, initVals)
 
-    # else: ## VGG16 architecture
-    #     convnet_common = {
-    #         'weights_initializer': globals.weights_initializer,
-    #         'biases_initializer': globals.biases_initializer,
-    #         'weights_regularizer': globals.weights_regularizer,
-    #         'biases_regularizer': globals.biases_regularizer,
-    #         'activation_fn': tf.nn.relu,
-    #         'padding': 'SAME',
-    #     }
-    #     ## Conv and Maxpool architecture lifted from VGG16
-    #     CONVNET = ConvStackParams({
-    #         'op_name': 'Convnet',
-    #         'tb': globals.tb,
-    #         'layers': (
-    #             ConvLayerParams(convnet_common).updated({'output_channels':64, 'kernel_shape':(3,3), 'stride':(1,1), 'padding':'VALID'}).freeze(),
-    #             ConvLayerParams(convnet_common).updated({'output_channels':64, 'kernel_shape':(3,3), 'stride':(1,1)}).freeze(),
-    #             MaxpoolParams(convnet_common).updated({'kernel_shape':(2,2), 'stride':(2,2)}).freeze(),
-    #
-    #             ConvLayerParams(convnet_common).updated({'output_channels':128, 'kernel_shape':(3,3), 'stride':(1,1)}).freeze(),
-    #             ConvLayerParams(convnet_common).updated({'output_channels':128, 'kernel_shape':(3,3), 'stride':(1,1)}).freeze(),
-    #             MaxpoolParams(convnet_common).updated({'kernel_shape':(2,2), 'stride':(2,2)}).freeze(),
-    #
-    #             ConvLayerParams(convnet_common).updated({'output_channels':256, 'kernel_shape':(3,3), 'stride':(1,1)}).freeze(),
-    #             ConvLayerParams(convnet_common).updated({'output_channels':256, 'kernel_shape':(3,3), 'stride':(1,1)}).freeze(),
-    #             ConvLayerParams(convnet_common).updated({'output_channels':256, 'kernel_shape':(3,3), 'stride':(1,1)}).freeze(),
-    #             MaxpoolParams(convnet_common).updated({'kernel_shape':(2,2), 'stride':(2,2)}).freeze(),
-    #
-    #             ConvLayerParams(convnet_common).updated({'output_channels':512, 'kernel_shape':(3,3), 'stride':(1,1)}).freeze(),
-    #             ConvLayerParams(convnet_common).updated({'output_channels':512, 'kernel_shape':(3,3), 'stride':(1,1)}).freeze(),
-    #             ConvLayerParams(convnet_common).updated({'output_channels':512, 'kernel_shape':(3,3), 'stride':(1,1)}).freeze(),
-    #             MaxpoolParams(convnet_common).updated({'kernel_shape':(2,2), 'stride':(2,2)}).freeze(),
-    #
-    #             ConvLayerParams(convnet_common).updated({'output_channels':512, 'kernel_shape':(3,3), 'stride':(1,1)}).freeze(),
-    #             ConvLayerParams(convnet_common).updated({'output_channels':512, 'kernel_shape':(3,3), 'stride':(1,1)}).freeze(),
-    #             ConvLayerParams(convnet_common).updated({'output_channels':512, 'kernel_shape':(3,3), 'stride':(1,1)}).freeze(),
-    #             MaxpoolParams(convnet_common).updated({'kernel_shape':(2,2), 'stride':(2,2)}).freeze(),
-    #         )
-    #     }).freeze()
+    def __copy__(self):
+        ## Shallow copy
+        return self.__class__(self)
 
-    HYPER = Im2LatexModelParams(initVals).updated({
-        'CALSTM_STACK':(CALSTM_1,),
-        'CONVNET': CONVNET
-        })
+    def copy(self, override_vals={}):
+        ## Shallow copy
+        return self.__class__(self).updated(override_vals)
 
-    if freeze:
-        HYPER.freeze()
 
-    return HYPER
+def expand_nested_shape(shape, B):
+    """ Convert every scalar in the nested sequence into a (B, s) sequence """
+    if not dlc.issequence(shape):
+        return (B, shape)
+    else:
+        return tuple(expand_nested_shape(s, B) for s in shape)
+
+def get_nested_shape(obj):
+    """ Get shape of possibly nested sequence of tensors """
+    if not dlc.issequence(obj):
+        return K.int_shape(obj)
+    else:
+        return tuple(get_nested_shape(o) for o in obj)
+
+def nested_tf_shape(s):
+    """
+    Get tf.TensorShape for each tensor in a nested structure of tuples/named tuples.
+    TensorShape objects are returned nested within the same tuple/named-tuple structure.
+    """
+    if dlc.issequence(s):
+        lst = [nested_tf_shape(e) for e in s]
+        if hasattr(s, '_make'):
+            return s._make(lst)
+        else:
+            return tuple(lst)
+    else:
+        return s.shape.as_list()
+
+
+class RNNWrapper(tf.keras.layers.Layer):
+    def __init__(self, params, reuse=None, _scope=None, beamsearch_width=1):
+        self._params = params = RNNParams(params)
+        with tf.variable_scope(_scope or self._params.op_name,
+                               initializer=self._params.weights_initializer, #regularizer=self._params.weights_regularizer
+                               ) as scope:
+            super(RNNWrapper, self).__init__(_reuse=reuse, _scope=scope, name=scope.name)
+            self.my_scope = scope
+            if len(self._params.layers_units) == 1:
+                self._cell = self._make_one_cell(self._params.layers_units[0])
+                self._num_layers = 1
+            else: # len(params.layers_units) > 1
+                ## Note: though we're creating multiple LSTM cells in the same scope, no variables
+                ## are being created here. They will be created when the individual cells are called
+                ## as part of MultiRNNCell.call(), wherein each is given a unique scope.
+                # self._cell = tf.nn.rnn_cell.MultiRNNCell(
+                #         [self._make_one_cell(n) for n in self._params.layers_units])
+                    
+                # self._num_layers = len(self._params.layers_units)
+                self._cell = tf.keras.layers.StackedRNNCells(
+                    [self._make_one_cell(n) for n in self._params.layers_units])
+                self._num_layers = len(self._params.layers_units)
+
+
+            self._batch_state_shape = expand_nested_shape(self._cell.state_size,
+                                                          self._params.B*beamsearch_width)
+            self._beamsearch_width = beamsearch_width
+            # print('RNNWrapper.__init__: batch input shape = %s'%(self.batch_input_shape,))
+
+    @property
+    def state_size(self):
+        return self._cell.state_size
+        
+    @property
+    def output_size(self):
+        return self._cell.output_size
+
+    def zero_state(self, batch_size, dtype):
+        with tf.variable_scope(self.my_scope) as var_scope:
+            with tf.name_scope(var_scope.original_name_scope):
+                return self._cell.zero_state(batch_size, dtype)
+
+    @property
+    def batch_input_shape(self):
+        return (self._params.B*self._beamsearch_width, self._params.i)
+
+    @property
+    def batch_output_shape(self):
+        return (self._params.B*self._beamsearch_width, self._cell.output_size)
+
+    @property
+    def batch_state_shape(self):
+        return self._batch_state_shape
+
+#    def _set_beamwidth(self, beamwidth):
+#        self._beamsearch_width = beamwidth
+#        self._batch_state_shape = expand_nested_shape(self.state_size,
+#                                                      self._params.B*beamwidth)
+
+    def assertStateShape(self, state):
+        """
+        Asserts that the shape of the tensor is consistent with the RNN's state shape.
+        For e.g. the state-shape of a MultiRNNCell with L layers would be ((n1, n1), (n2, n2) ... (nL, nL))
+        and the corresponding state-tensor should be of shape :
+        (((B,n1),(B,n1)), ((B,n2),(B,n2)) ... ((B,nL),(B,nL)))
+        """
+        assert self.batch_state_shape == get_nested_shape(state), 'state-shape assertion Failed for state type = %s and value = %s'%(type(state), state)
+
+    def assertOutputShape(self, output):
+        """
+        Asserts that the shape of the tensor is consistent with the RNN's output shape.
+        For e.g. the output shape is o then the input-tensor should be of shape (B,o)
+        """
+        assert self.batch_output_shape == K.int_shape(output)
+
+    def assertInputShape(self, inp):
+        """
+        Asserts that the shape of the tensor is consistent with the RNN's input shape.
+        For e.g. if the input shape is m then the input-tensor should be of shape (B,m)
+        """
+        assert K.int_shape(inp) == self.batch_input_shape
+
+    def _assertBatchShape(self, shape, tnsr):
+        """
+        Asserts that the shape of the tensor is consistent with the RNN's shape.
+        For e.g. the state-shape of a MultiRNNCell with L layers would be ((n1, n1), (n2, n2) ... (nL, nL))
+        and the corresponding state-tensor should be (((B,n1),(B,n1)), ((B,n2),(B,n2)) ... ((B,nL),(B,nL)))
+        Similarly, if the input shape is m then the input-tensor should be of shape (B,m)
+        """
+        return expand_nested_shape(shape, self._params.B*self._beamsearch_width) == K.int_shape(tnsr)
+
+    @property
+    def num_layers(self):
+        return self._num_layers
+
+    def call(self, inp, state):
+        with tf.variable_scope(self.my_scope) as var_scope:
+            with tf.name_scope(var_scope.original_name_scope):
+                ## Parameter Validation
+                assert isinstance(inp, tf.Tensor)
+                self.assertInputShape(inp)
+                self.assertStateShape(state)
+
+                params = self._params
+                output, new_state = self._cell(inp, state)
+                # Tensorboard Summaries
+                # if params.tb is not None:
+                #     summarize_layer(self._params.op_name, None, None, output, new_state)
+                    # summarize_layer(self._params.op_name, tf.get_collection('weights'),
+                    #                 tf.get_collection('biases'), output, new_state)
+
+                self.assertOutputShape(output)
+                self.assertStateShape(new_state)
+                return output, new_state
+
+    def _make_one_cell(self, num_units):
+        with tf.variable_scope(self.my_scope) as var_scope:
+            with tf.name_scope(var_scope.original_name_scope):
+                params = self._params
+                #The implementation is based on: http://arxiv.org/abs/1409.2329.
+                ## LSTMBlockFusedCell is replacement for LSTMBlockCell
+                cell = tf.keras.layers.LSTMCell(num_units,
+                                                   forget_bias=params.forget_bias,
+                                                   use_peephole=params.use_peephole
+                                                   )
+                if params.dropout is not None:
+                    with tf.variable_scope('DropoutWrapper'):
+                        cell = tf.nn.rnn_cell.DropoutWrapper(cell,
+                                                      input_keep_prob=1.,
+                                                      state_keep_prob=params.dropout.keep_prob,
+                                                      output_keep_prob=params.dropout.keep_prob,
+                                                      variational_recurrent=True,
+                                                      dtype=params.dtype
+                                                      )
+                return cell
+
+
+def sizeofVar(var):
+    shape = K.int_shape(var)
+    return np.prod(shape)
+
+def printVars(name, coll):
+    logger.critical(name)
+    total_n = 0
+    for var in tf.trainable_variables():
+        n = sizeofVar(var)
+        total_n += n
+        logger.critical("%s %s num_params = %d", var.name, K.int_shape(var), n)
+    logger.critical('Total number of variables = %d', total_n)
+    return total_n
+
+def edit_distance3D(B, k, predicted_ids, predicted_lens, target_ids, target_lens, blank_token=None,  space_token=None, eos_token=None):
+    """Compute edit distance for matrix of shape (B,k,T) """
+    with tf.name_scope('edit_distance3D'):
+        p_shape = K.int_shape(predicted_ids)
+        t_shape = K.int_shape(target_ids)
+        assert len(p_shape) == 3
+        assert p_shape[:2] == (B, k)
+        assert K.int_shape(predicted_lens) == (B, k)
+        assert len(t_shape) == 3
+        assert t_shape[:2] == (B, k)
+        assert K.int_shape(target_lens) == (B, k)
+        predicted_sparse = dense_to_sparse3D(B, predicted_ids, predicted_lens, blank_token, space_token, eos_token=eos_token)
+        ## blank tokens should not be present in target_ids
+        target_sparse = dense_to_sparse3D(B, target_ids, target_lens, space_token=space_token, eos_token=eos_token)
+
+        d = tf.edit_distance(predicted_sparse, target_sparse)
+        # assert K.int_shape(d) == K.int_shape(predicted_lens)
+        d.set_shape(predicted_lens.shape) ## Reassert shape in case it got lost.
+        return d
+
+def edit_distance2D(B, predicted_ids, predicted_lens, target_ids, target_lens, blank_token=None, space_token=None, eos_token=None):
+    """
+    Compute edit distance of predicted_ids (optionally ignoring blank_tokens, space_tokens and eos_tokens) with target_ids
+    which are assumed to have no blank tokens but may have space tokens and eos_tokens.
+    The result is equivalent to computing edit_distance after squashing predicted_lens - but is more efficient since it doesn't
+    actually do the squashing.
+    Args:
+        B: batch-size
+        predicted_ids: shape (B, T)
+        target_ids: shape (B, T)
+        blank_token: blank token as defined by CTC.
+    """
+    with tf.name_scope('edit_distance2D'):
+        p_shape = K.int_shape(predicted_ids)
+        t_shape = K.int_shape(target_ids)
+        assert len(p_shape) == 2
+        assert p_shape[0] == B
+        assert K.int_shape(predicted_lens) == (B,)
+        assert len(t_shape) == 2
+        assert t_shape[0] == B
+        assert K.int_shape(target_lens) == (B,)
+
+        predicted_sparse = dense_to_sparse2D(predicted_ids, predicted_lens, blank_token, space_token, eos_token)
+
+        ## blank tokens should not be present in target_ids
+        target_sparse = dense_to_sparse2D(target_ids, target_lens, space_token=space_token, eos_token=eos_token)
+
+        d = tf.edit_distance(predicted_sparse, target_sparse)
+        # assert K.int_shape(d) == K.int_shape(predicted_lens)
+        d.set_shape(predicted_lens.shape) ## Reassert shape in case it got lost.
+        return d
+
+
+def edit_distance2D_sparse(B, predicted_sparse, target_ids, target_lens, space_token=None, eos_token=None):
+    """
+    Compute edit distance of predicted_ids (ignoring blank and space tokens) with target_ids (which are assumed to have no blank tokens).
+    The result is equivalent to computing edit_distance after squashing predicted_lens - but is more efficient since it doesn't
+    actually do that.
+    Args:
+        B: batch-size
+        predicted_sparse: sparse tensor of dense_shape (B, T)
+        target_ids: dense tensor of shape shape (B, T)
+        target_lens: lengths of id-sequences (rows of target_ids) - (B,)
+    """
+    with tf.name_scope('edit_distance2D'):
+        p_shape = predicted_sparse.get_shape().as_list()
+        t_shape = K.int_shape(target_ids)
+        assert len(p_shape) == 2
+        assert p_shape[0] == B
+        assert K.int_shape(predicted_lens) == (B,)
+        assert len(t_shape) == 2
+        assert t_shape[0] == B
+        assert K.int_shape(target_lens) == (B,)
+
+        target_sparse = dense_to_sparse2D(target_ids, target_lens, space_token=space_token, eos_token=eos_token)
+
+        d = tf.edit_distance(predicted_sparse, target_sparse)
+        d.set_shape(target_lens.shape) ## Reassert shape in case it got lost.
+        return d
+
+
+def seqlens(m, eos_token=0, include_eos_token=True):
+    """
+    Takes in a tensor m, shaped (..., T) having '...' sequences of length T each optionally containing one or more eos_tokens.
+    Returns the length of each sequence upto the first eos_token. If a sequence didn't have a any eos_token
+    then it returns T for that sequence. If include_eos_token is True, one eos_token is counted towards the length otherwise
+    not.
+
+    Args:
+        m: input tensor containing the sequences whose lengths need to be computed. The tensor must have rank at least 2 - i.e.
+        rank(m) >= 2. The last dimension must be the time dimension. e.g. (B,T) where B is the batch dimension and T is the time
+        dimension. (B,W,T) where W is the beam-width dimension and so on. All dimensions but the time dimension (T) must be
+        fully specified.
+        eos_token: (integer or integer tensor) (optional) the eos_token. defaults to zero.
+        include_eos_token: (boolean) (optional) if True (default) one eos_token is counted towards the length otherwise not.
+            However, if no eos_token was found in the sequence then the max_length (T) is returned as its length.
+
+    Returns:
+        A tensor of shape m.shape[:-1] holding sequence-lengths - i.e. shape of input minus the last dimension. If the input
+        was shape (B,T), output will have shape (B,). If input is shape (B,W,T) output will have shape (B,W) and so on.
+    """
+    with tf.name_scope('seqlens'):
+        orig_shape = K.int_shape(m)
+        assert len(orig_shape) >= 2
+        T = tf.shape(m)[-1]
+        B = np.prod(orig_shape[:-1])
+        if len(orig_shape) > 2:
+            m = tf.reshape(m, (B, T))
+        assert B > 0
+        lens = []
+        for i in range(B):
+            m_i = m[i]
+            eos_bool = tf.equal(m_i, eos_token)
+            eos_indices = tf.where(eos_bool) ## indices sorted in row-major order, therefore the first occurence is at the beginning
+            has_eos = tf.reduce_any(eos_bool)
+            len_i = tf.cond(has_eos,
+                            true_fn=lambda: tf.cast(((eos_indices[0][0] + 1) if include_eos_token else eos_indices[0][0]), dtype=tf.int64),
+                            false_fn=lambda: tf.cast(T, dtype=tf.int64))
+#            len_i.set_shape( () )
+            lens.append(len_i)
+        tf_lens = tf.stack(lens)
+
+        return tf_lens if (len(orig_shape) == 2) else tf.reshape(tf_lens, orig_shape[:-1])
+
+
+#def seqlens_2d(B, m, eos_token=0):
+#    """
+#    Takes in a tensor m, shaped (B, T) having 'B' sequences of length T and optionally containing one or more eos_tokens.
+#    Returns the length of each sequences upto but not including the first eos_token. If a sequence didn't have a any eos_token
+#    then it returns T for that sequence.
+#
+#    Returns:
+#        A tensor of shape (B,) holding sequence-lengths.
+#    """
+#    with tf.name_scope('seqlens_2d'):
+#        assert len(K.int_shape(m)) == 2
+#        assert K.int_shape(m)[0] == B
+#        T = tf.shape(m)[1]
+#        lens = []
+#        for i in range(B):
+#            m_i = m[i]
+#            eos_bool = tf.equal(m_i, eos_token)
+#            eos_indices = tf.where(eos_bool, name='eos_indices')
+#            has_eos = tf.reduce_any(eos_bool)
+#            len_i = tf.cond(has_eos, true_fn=lambda: tf.cast(eos_indices[0][0], dtype=tf.int64), false_fn=lambda: tf.cast(T, dtype=tf.int64))
+##            len_i.set_shape( () )
+#            lens.append(len_i)
+#
+#        return tf.stack(lens)
+
+
+def squash_2d(B, m, lens, blank_token, padding_token=0):
+    """
+    Takes in a tensor m, shaped (B, T), from each row removes blank_tokens and appends
+    an equal number of padding_tokens at the end. Returns the resulting (B, T) shaped tensor and
+    a tensor carrying sequence_lengths, shaped (B,).
+    """
+    with tf.name_scope('squash_2d'):
+        assert len(K.int_shape(m)) == 2
+        assert K.int_shape(lens) == (B,)
+        assert K.int_shape(m)[0] == B
+        T = tf.shape(m)[1]
+        squashed = []
+        squashed_lens = []
+        seq_mask = tf.sequence_mask(lens, maxlen=T)
+        for i in range(B):
+            m_i = m[i]
+            mask_i = tf.logical_and(seq_mask[i], tf.not_equal(m_i, blank_token)) #(T,)
+            idx_i = tf.where(mask_i) # (N, 1)
+            vals_i = tf.gather_nd(m_i, idx_i) # (N, )
+            len_i = tf.shape(vals_i)[0]
+            paddings = [(0, T - len_i)] # (1, 2)
+            squashed.append(tf.pad(vals_i, paddings, mode="CONSTANT", name=None, constant_values=padding_token))
+            squashed_lens.append(len_i)
+        return tf.stack(squashed), tf.stack(squashed_lens)
+
+
+def squash_3d(B, k, m, lens, blank_token, padding_token=0):
+    """
+    Takes in a tensor m, shaped (B, k, T), from each sequence of length T removes blank_tokens and appends
+    an equal number of padding_tokens at the end. Returns the resulting (B, k, T) shaped tensor and
+    a tensor carrying sequence_lengths, shaped (B, k).
+    """
+    with tf.name_scope('squash_3d'):
+        assert len(K.int_shape(m)) == 3
+        assert K.int_shape(m)[:2] == (B,k)
+        assert K.int_shape(lens) == (B,k)
+        squashed = []
+        squashed_lens = []
+        for i in range(B):
+            s_m, s_l = squash_2d(k, m[i], lens[i], blank_token, padding_token)
+            squashed.append(s_m)
+            squashed_lens.append(s_l)
+        return tf.stack(squashed), tf.stack(squashed_lens)
+
+
+def _dense_to_sparse(t, mask, blank_token=None, space_token=None, eos_token=None):
+        if blank_token is not None:
+            mask = tf.logical_and(mask, tf.not_equal(t, blank_token))
+        if space_token is not None:
+            mask = tf.logical_and(mask, tf.not_equal(t, space_token))
+        if eos_token is not None:
+            mask = tf.logical_and(mask, tf.not_equal(t, eos_token))
+
+        idx = tf.where(mask)
+        vals = tf.gather_nd(t, idx)
+        return tf.SparseTensor(idx, vals, tf.shape(t, out_type=tf.int64))
+
+
+def dense_to_sparse2D(t, lens, blank_token=None, space_token=None, eos_token=None):
+    with tf.name_scope('dense_to_sparse2D'):
+        assert len(K.int_shape(t)) == 2
+        assert len(K.int_shape(lens)) == 1
+        mask = tf.sequence_mask(lens, maxlen=tf.shape(t)[1])
+        return _dense_to_sparse(t, mask, blank_token, space_token, eos_token)
+
+
+def dense_to_sparse3D(B, t, lens, blank_token=None, space_token=None, eos_token=None):
+    with tf.name_scope('dense_to_sparse3D'):
+        assert K.int_shape(t)[0] == B
+        assert len(K.int_shape(t)) == 3
+        assert len(K.int_shape(lens)) == 2
+        mask = tf.stack([tf.sequence_mask(lens[i], maxlen=tf.shape(t)[2]) for i in range(B)])
+        return _dense_to_sparse(t, mask, blank_token, space_token, eos_token)
+
+
+def ctc_loss(yLogits, logits_lens, y_ctc, ctc_len, B, Kv):
+    # B = self.C.B
+    # ctc_len = self._ctc_len
+    # y_ctc = self._y_ctc
+
+    with tf.name_scope('_ctc_loss'):
+        assert K.int_shape(yLogits) == (B, None, Kv)
+        assert K.int_shape(logits_lens) == (B,)
+        ctc_mask = tf.sequence_mask(ctc_len, maxlen=tf.shape(y_ctc)[1], dtype=tf.bool)
+        assert K.int_shape(ctc_mask) == (B,None) # (B,T)
+        y_idx =    tf.where(ctc_mask)
+        y_vals =   tf.gather_nd(y_ctc, y_idx)
+        y_sparse = tf.SparseTensor(y_idx, y_vals, tf.shape(y_ctc, out_type=tf.int64))
+        ctc_losses = tf.nn.ctc_loss(y_sparse,
+                                    yLogits,
+                                    logits_lens,
+                                    ctc_merge_repeated=False,
+                                    time_major=False)
+        assert K.int_shape(ctc_losses) == (B, )
+        return ctc_losses
+
+
+def batch_bottom_k_2D(t, k):
+    t2, indices = batch_top_k_2D(t * -1, k)
+    return t2 * -1, indices
+
+
+def batch_top_k_2D(t, k):
+    """
+    Slice a tensor of size (B, W) to size (B, k) by taking the top k of W values of
+    each row. The rows in the returned tensor (B,k) are sorted in descending order
+    of values.
+    """
+    shape_t = K.int_shape(t)
+    assert len(shape_t) == 2 # (B, W)
+    B = shape_t[0]
+
+    with tf.name_scope('_batch_top_k'):
+        t2, top_k_ids = tf.nn.top_k(t, k=k, sorted=True) # (B, k)
+        # Convert ids returned by tf.nn.top_k to indices appropriate for tf.gather_nd.
+        # Expand the id dimension from 1 to 2 while prefixing each id with the batch-index.
+        # Thus the indices will go from size (B,k,1) to (B, k, 2). These can then be used to
+        # create a new tensor from the original tensor on which top_k was invoked originally.
+        # If that tensor was - for e.g. - of shape (B, W, T) then we'll now be able to slice
+        # it into a tensor of shape (B,k,T) using the top_k_ids.
+        reshaped_ids = tf.reshape(top_k_ids, shape=(B, k, 1)) # (B, k, 1)
+        b = tf.reshape(tf.range(B), shape=(B,1)) # (B, 1)
+        b = tf.tile(b, [1,k]) # (B, k)
+        b = tf.reshape(b, shape=(B, k, 1)) #(B,k,1)
+        indices = tf.concat((b, reshaped_ids), axis=2) # (B, k, 2)
+        assert K.int_shape(indices) == (B, k, 2)
+        return t2, indices
+
+
+def batch_slice(t, indices):
+    """
+    Apply slice-indices returned by batch_top_k_2D (B, k, 2) to a tensor
+    t (B, W, ...) and return the resulting tensor of shape (B, k, ...).
+    Used for cases where the top_k values are sliced off from a tensor
+    containing one metric (say score) and then applied to a tensor having
+    another metric (say accuracy).
+    """
+    with tf.name_scope('_batch_slice'):
+        shape_t = K.int_shape(t) # (B, W ,...)
+        shape_i = K.int_shape(indices) # (B, k, 2)
+        assert len(shape_t) >= 2
+        assert len(shape_i) == 3
+        assert shape_i[2] == 2
+        B = shape_t[0]
+        W = shape_t[1]
+        k = shape_i[1]
+        assert W >= k
+
+        t_slice = tf.gather_nd(t, indices) # (B, k ,...)
+        return t_slice
+
+
+def group2D(a, stride):
+    """
+    Flattens and concatenates rectangular blocks of a tensor (B, H, W, C) along dimensions H and W. The first dimension
+    B (batch dimension) is left untouched. Given a stride of (h,w), the operation scans the 2D shape (H,W)
+    in strides lengths of (h,w) and reshapes each (h,w,C) block to a shape of (1,1,C*h*w). The resulting output shape
+    thus is (B, H/h, W/w, C*h*w). H must be divisible by h and W by w.
+    The operation is a 2D pooling operation similar to max-pooling except that
+    all channels are concatenated instead of taking their max. Hence, the channel dimension gets expanded by the
+    block-size.
+    :param a: The input tensor. Must be of rank 3 or more and shape (B, H, W, ...).
+    :param stride: Shape - (h,w) - of blocks to be fused along dimensions H and W of the input.
+            Similar to specifying the shape of a convolution kernel.
+    :return: The reshaped tensor of shape (B, H/h, W/w, C*h*w)
+    """
+    shape = K.int_shape(a)
+    B = shape[0]
+    H = shape[1]
+    W = shape[2]
+    assert B is not None
+    assert H is not None
+    assert W is not None
+    h,w = stride
+    assert H%h == 0
+    assert W%w == 0
+
+    rows = []
+    for j in range(H/h):
+        row = []
+        for i in range(W/w):
+            block = a[:, j*h:(j+1)*h, i*w:(i+1)*w]  # (B, h, w, C)
+            block = tf.reshape(block, [B, -1])  # (B, h*w*C)
+            row.append(block)  # [(B, h*w*C), ...]
+        row = tf.stack(row, axis=1)  # (B, W/w, h*w*C)
+        rows.append(row)  # [(B, W/w, h*w*C), ...]
+
+    return tf.stack(rows, axis=1)  # [(B, H/h, W/w, h*w*C), ...]
+
+
+def add_to_collection(name, value):
+    if value in tf.get_collection(name):
+        logger.warn('tfc.add_to_collection: collection %s already has value %s'%(name, value))
+    else:
+        tf.add_to_collection(name, value)
