@@ -692,7 +692,7 @@ class VisualizeDir(object):
 
         epoch_steps = [get_step(f) for f in os.listdir(self._storedir) if f.startswith('validation')]
         epoch_steps = sorted(list(set(epoch_steps)))
-        print 'epoch_steps: %s'%epoch_steps
+        print ('epoch_steps: %s'%epoch_steps)
         if len(epoch_steps) <= save_epochs:
             print('Only %d full epochs were found. Deleting nothing.'%len(epoch_steps))
             return False
@@ -705,12 +705,12 @@ class VisualizeDir(object):
             files_to_remove = set([f for f in training_files if (get_step(f) in steps_to_remove)])
             files_to_keep = set([f for f in os.listdir(self._storedir)]) - files_to_remove
             if dry_run:
-                print '%d files will be kept\n'%len(files_to_keep), pd.Series(sorted(list(files_to_keep), key=get_sort_order))
-                print '%d files will be removed\n'%len(files_to_remove), pd.Series(sorted(list(files_to_remove), key=get_sort_order))
+                print ('%d files will be kept\n'%len(files_to_keep), pd.Series(sorted(list(files_to_keep), key=get_sort_order)))
+                print ('%d files will be removed\n'%len(files_to_remove), pd.Series(sorted(list(files_to_remove), key=get_sort_order)))
             else:
                 for f in files_to_remove:
                     os.remove(os.path.join(self._storedir, f))
-                print 'Removed %d files\n'%len(files_to_remove), pd.Series(sorted(list(files_to_remove), key=get_step))
+                print ('Removed %d files\n'%len(files_to_remove), pd.Series(sorted(list(files_to_remove), key=get_step)))
 
     def prune_snapshots(self, keep_first=None, keep_last=None, dry_run=True):
         """ Keep the latest 'save' snapshots. Delete the rest. """
@@ -729,19 +729,19 @@ class VisualizeDir(object):
 
         steps_to_remove = set(steps) - steps_to_keep
         if len(steps_to_remove) <= 0:
-            print 'Nothing to Delete'
+            print ('Nothing to Delete')
             return
-        print 'steps to keep: ', sorted(list(steps_to_keep))
-        print 'steps to remove: ', sorted(list(steps_to_remove))
+        print ('steps to keep: ', sorted(list(steps_to_keep)))
+        print ('steps to remove: ', sorted(list(steps_to_remove)))
         files_to_remove = [f for f in files if (get_step(f) not in steps_to_keep) ]
         files_to_remove = sorted(files_to_remove, key=get_step)
 
         if dry_run:
-            print '%d files will be removed\n'%len(files_to_remove), pd.Series(files_to_remove)
+            print ('%d files will be removed\n'%len(files_to_remove), pd.Series(files_to_remove))
         else:
             for f in files_to_remove:
                 os.remove(os.path.join(self._logdir, f))
-            print '%d files removed\n'%len(files_to_remove), pd.Series(files_to_remove)
+            print ('%d files removed\n'%len(files_to_remove), pd.Series(files_to_remove))
 
 
 class VisualizeStep():
